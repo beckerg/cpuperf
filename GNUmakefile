@@ -15,6 +15,7 @@ LDLIBS   += -lpthread
 
 ifeq ($(PLATFORM),linux)
 CPPFLAGS += -D_GNU_SOURCE
+LDLIBS   += -latomic
 endif
 
 .DELETE_ON_ERROR:
@@ -36,6 +37,9 @@ clean:
 	rm -f $(patsubst %.c,.%.d*,${SRC})
 
 cleandir clobber distclean maintainer-clean: clean
+
+clock: CPPFLAGS += -DUSE_CLOCK=1
+clock: ${PROG}
 
 debug: CPPFLAGS += -UNDEBUG -DCLP_DEBUG
 debug: CFLAGS += -O0 -fno-omit-frame-pointer

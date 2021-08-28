@@ -83,19 +83,31 @@ subr_inc_atomic(struct testdata *data)
     return atomic_fetch_add_explicit(&data->inc.cnt, 1, memory_order_relaxed);
 }
 
-#if __amd64__
+#if HAVE_RDTSC
 uintptr_t
 subr_rdtsc(struct testdata *data)
 {
-    return __rdtsc();
+    return _rdtsc();
 }
+#endif
 
+#if HAVE_RDTSCP
 uintptr_t
 subr_rdtscp(struct testdata *data)
 {
     return __rdtscp(&data->tsc.aux);
 }
+#endif
 
+#ifdef __RDPID__
+uintptr_t
+subr_rdpid(struct testdata *data)
+{
+    return _rdpid_u32();
+}
+#endif
+
+#if __amd64__
 uintptr_t
 subr_cpuid(struct testdata *data)
 {
@@ -113,14 +125,6 @@ subr_lsl(struct testdata *data)
 
     return cpu & 0xfff;
 }
-
-#ifdef __RDPID__
-uintptr_t
-subr_rdpid(struct testdata *data)
-{
-    return _rdpid_u32();
-}
-#endif
 #endif
 
 #if __linux__
@@ -218,12 +222,14 @@ subr_ticket_lock(struct testdata *data)
     head = atomic_inc(&data->ticket.head);
 
     while ((tail = atomic_load_acq(&data->ticket.tail)) < head) {
-        uint64_t stop = __rdtsc() + (head - tail) * 256;
+#if __amd64__
+        uint64_t stop = _rdtsc() + (head - tail) * 256;
 
         _mm_pause();
 
-        while (__rdtsc() < stop)
+        while (_rdtsc() < stop)
             continue;
+#endif
     }
 }
 

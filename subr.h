@@ -12,6 +12,20 @@
 #include <semaphore.h>
 #include <pthread.h>
 
+#define HAVE_RDTSC          (__has_builtin(__builtin_ia32_rdtsc))
+#define HAVE_RDTSCP         (__has_builtin(__builtin_ia32_rdtscp))
+#define HAVE_PAUSE          (__has_builtin(__builtin_ia32_pause))
+
+static inline void
+cpu_pause(void)
+{
+#if HAVE_PAUSE
+    _mm_pause();
+#else
+    usleep(1);
+#endif
+}
+
 struct inc {
     atomic_ullong cnt;
 };
@@ -86,15 +100,21 @@ extern uintptr_t subr_baseline(struct testdata *data);
 extern uintptr_t subr_inc_tls(struct testdata *data);
 extern uintptr_t subr_inc_atomic(struct testdata *data);
 
-#if __amd64__
+#if HAVE_RDTSC
 extern uintptr_t subr_rdtsc(struct testdata *data);
+#endif
+
+#if HAVE_RDTSCP
 extern uintptr_t subr_rdtscp(struct testdata *data);
-extern uintptr_t subr_cpuid(struct testdata *data);
-extern uintptr_t subr_lsl(struct testdata *data);
+#endif
 
 #ifdef __RDPID__
 extern uintptr_t subr_rdpid(struct testdata *data);
 #endif
+
+#if __amd64__
+extern uintptr_t subr_cpuid(struct testdata *data);
+extern uintptr_t subr_lsl(struct testdata *data);
 #endif
 
 #if __linux

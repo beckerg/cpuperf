@@ -57,12 +57,18 @@ typedef cpu_set_t cpuset_t;
 #define __aligned(_size)    __attribute__((__aligned__(_size)))
 #endif
 
+/* By default we use rdtsc() to measure timing intervals, but if
+ * it's not available we'll fall back to using clock_gettime().
+ */
+#ifndef USE_CLOCK
+#define USE_CLOCK           (!HAVE_RDTSC)
+#endif
+
 bool headers, shared, unserialized;
 uint64_t tsc_freq;
 time_t duration;
 char *progname;
 int verbosity;
-int semval;
 int left;
 
 volatile bool testrunning;
@@ -75,8 +81,9 @@ struct clp_posparam posparamv[] = {
 struct clp_option optionv[] = {
     CLP_OPTION('d', time_t,   duration,     NULL, "specify max duration (seconds)"),
     CLP_OPTION('H', bool,     headers,      NULL, "suppress headers"),
-    CLP_OPTION('f', uint64_t, tsc_freq,     NULL, "specify processor cycles/second"),
-    CLP_OPTION('i', int,      semval,       NULL, "set initial semaphore value"),
+#if !USE_CLOCK
+    CLP_OPTION('f', uint64_t, tsc_freq,     NULL, "specify TSC frequency"),
+#endif
     CLP_OPTION('s', bool,     shared,       NULL, "let threads share data if applicable"),
     CLP_OPTION('u', bool,     unserialized, NULL, "do not serialize test function calls"),
     CLP_OPTION_VERBOSITY(verbosity),
@@ -97,10 +104,11 @@ struct tdargs {
     pthread_t        tid;
     uint             cpu;
     struct test     *test;
-    uint64_t         c_start;
-    uint64_t         c_stop;
+    uint64_t         cyc_start;
+    uint64_t         cyc_stop;
     double           latmin;
     double           latavg;
+    uint64_t         calls;
 
     struct testdata testdata __aligned(128);
 };
@@ -112,14 +120,18 @@ struct test testv[] = {
     { subr_xoroshiro,   subr_xoroshiro_init, 0, "xoroshiro",     "128-bit prng" },
     { subr_mod128,      subr_xoroshiro_init, 0, "mod128",        "xoroshiro % 128" },
     { subr_mod127,      subr_xoroshiro_init, 0, "mod127",        "xoroshiro % 127" },
-#if __amd64__
+#if HAVE_RDTSC
     { subr_rdtsc,                      NULL, 0, "rdtsc",         "rdtsc" },
+#endif
+#if HAVE_RDTSCP
     { subr_rdtscp,                     NULL, 0, "rdtscp",        "rdtscp (rdtsc+rdpid)" },
-    { subr_cpuid,                      NULL, 0, "cpuid",         "cpuid (serialization)" },
-    { subr_lsl,                        NULL, 0, "lsl",           "getcpu" },
+#endif
 #ifdef __RDPID__
     { subr_rdpid,                      NULL, 0, "rdpid",         "getcpu" },
 #endif
+#if __amd64__
+    { subr_cpuid,                      NULL, 0, "cpuid",         "cpuid (serialization)" },
+    { subr_lsl,                        NULL, 0, "lsl",           "getcpu" },
 #endif
 #if __linux__
     { subr_sched_getcpu,               NULL, 0, "sched_getcpu",  "getcpu" },
@@ -151,6 +163,46 @@ eprint(int xerrno, const char *fmt, ...)
             xerrno ? strerror(xerrno) : "");
 }
 
+
+/* Time interval measurement abstractions...
+ */
+static inline uint64_t
+itv_cycles(void)
+{
+#if HAVE_RDTSC && !USE_CLOCK
+    return __rdtsc();
+#else
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    return now.tv_sec * 1000000000 + now.tv_nsec;
+#endif
+}
+
+static inline uint64_t
+itv_start(void)
+{
+#if HAVE_RDTSC && !USE_CLOCK
+    __asm__ volatile ("cpuid" ::: "eax","ebx","ecx","edx","memory");
+#endif
+
+    return itv_cycles();
+}
+
+static inline uint64_t
+itv_stop(void)
+{
+#if HAVE_RDTSCP && !USE_CLOCK
+    uint aux;
+
+    return __rdtscp(&aux);
+#else
+    return itv_cycles();
+#endif
+}
+
+
 static void *
 test_main(void *arg)
 {
@@ -160,8 +212,7 @@ test_main(void *arg)
     struct testdata *data;
     struct test *test;
     cpuset_t nmask;
-    long i;
-    uint aux;
+    u_long i;
     int rc;
 
     CPU_ZERO(&nmask);
@@ -182,11 +233,11 @@ test_main(void *arg)
 
     /* Spin here to synchronize with all threads and maybe kick in turbo boost...
      */
-    while (__rdtsc() < args->c_start)
-        _mm_pause();
+    while (itv_cycles() < args->cyc_start)
+        cpu_pause();
 
     if ((shared && test->shared) || unserialized) {
-        args->c_start = __rdtscp(&aux);
+        args->cyc_start = itv_start();
 
         for (i = 0; testrunning; ++i) {
             func(data);
@@ -195,33 +246,34 @@ test_main(void *arg)
             func(data);
         }
 
-        args->c_stop = __rdtscp(&aux);
+        args->cyc_stop = itv_stop();
 
-        args->latavg = (args->c_stop - args->c_start) / (i * 4.0);
+        args->latavg = (args->cyc_stop - args->cyc_start) / (i * 4.0);
         args->latmin = args->latavg;
+        args->calls = i * 4;
     }
     else {
-        unsigned long long start, stop;
-
-        args->c_start = __rdtscp(&aux);
+        args->cyc_start = itv_start();
 
         for (i = 0; testrunning; ++i) {
-            __asm__ volatile ("cpuid" ::: "eax","ebx","ecx","edx","memory");
-            start = __rdtsc();
+            uint64_t start, stop;
+
+            start = itv_start();
 
             func(data);
 
-            stop = __rdtscp(&aux);
+            stop = itv_stop();
 
             latavg += stop - start;
             if (stop - start < latmin)
                 latmin = stop - start;
         }
 
-        args->c_stop = __rdtscp(&aux);
+        args->cyc_stop = itv_stop();
 
         args->latavg = latavg / i;
         args->latmin = latmin;
+        args->calls = i;
     }
 
     assert((aux & 0xfff) == args->cpu);
@@ -239,11 +291,12 @@ int
 main(int argc, char **argv)
 {
     struct tdargs *tdargsv;
+    double cyc_baseline;
     struct test *test;
-    double c_baseline;
     size_t tdargsvsz;
     cpuset_t omask;
-    int namewidth;
+    int calls_width;
+    int name_width;
     int rc;
 
     progname = strrchr(argv[0], '/');
@@ -277,7 +330,11 @@ main(int argc, char **argv)
         }
     }
 
-#if __amd64__
+#if USE_CLOCK
+    tsc_freq = 1000000000; /* using clock_gettime() */
+
+#elif HAVE_RDTSC
+
 #if __FreeBSD__
     if (!tsc_freq) {
         size_t valsz = sizeof(tsc_freq);
@@ -309,20 +366,6 @@ main(int argc, char **argv)
             fclose(fp);
         }
     }
-
-    if (!tsc_freq) {
-        const char cmd[] = "lscpu | sed -En 's/^BogoMIPS[^0-9]*([0-9.]*)$/\\1/p'";
-        char buf[32];
-        FILE *fp;
-
-        fp = popen(cmd, "r");
-        if (fp) {
-            if (fgets(buf, sizeof(buf), fp)) {
-                tsc_freq = (strtod(buf, NULL) * 1000000) / 2;
-            }
-            pclose(fp);
-        }
-    }
 #endif
 #endif
 
@@ -339,49 +382,37 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
-    namewidth = 8;
+    calls_width = 0;
+    name_width = 8;
 
     for (test = testv; test->name; ++test) {
         int w = strlen(test->name);
 
-        if (w > namewidth)
-            namewidth = w;
+        if (w > name_width)
+            name_width = w;
     }
 
-    if (headers) {
-        printf("\n%3s %5s %8s %10s %7s %10s %7s  %7s\n",
-               "", "", "", "avg", "avg", "max", "min", "min");
-
-        printf("%3s %5s %8s %10s %7s %10s %7s  %7s  %-*s  %s\n",
-               "CPU", "TSC", "ELAPSED",
-               "ITERS/SEC", "CYCLES",
-               "ITERS/SEC", "CYCLES",
-               "NSECS",
-               namewidth, "TEST", "DESC");
-    }
-
-    c_baseline = 0;
+    cyc_baseline = 0;
 
     if (setpriority(PRIO_PROCESS, 0, -20) && verbosity > 0)
         eprint(0, "run as root to reduce jitter");
 
     for (test = testv; test->name; ++test) {
-        double cptavgtot, cptmintot;
-        double cptavg, cptmin;
-        char *suspicious;
+        double cptavgtot, cptmintot, cptavg, cptmin;
+        uint64_t cyc_start, calls_total;
         double cyclestot;
-        uint64_t c_start;
+        char *suspicious;
 
         memset(tdargsv, 0, tdargsvsz);
-        c_start = __rdtsc() + tsc_freq;
+        cyc_start = itv_cycles() + tsc_freq;
         testrunning = true;
 
         for (int i = 0; i < posparamv->argc; ++i) {
             struct tdargs *args = tdargsv + i;
 
             args->cpu = atoi(posparamv->argv[i]);
-            args->c_start = c_start;
-            args->c_stop = c_start + duration * tsc_freq;
+            args->cyc_start = cyc_start;
+            args->cyc_stop = cyc_start + duration * tsc_freq;
             args->test = test;
             args->data = &args->testdata;
             args->data->cpumax = posparamv->argc;
@@ -403,6 +434,7 @@ main(int argc, char **argv)
         cptmintot = DBL_MAX;
         cptmin = DBL_MAX;
         cyclestot = 0;
+        calls_total = 0;
 
         sleep(duration + 1);
         testrunning = false;
@@ -418,17 +450,17 @@ main(int argc, char **argv)
                 continue;
             }
 
-            cycles = args->c_stop - args->c_start;
+            cycles = args->cyc_stop - args->cyc_start;
             cyclestot += cycles;
 
             cptavg = args->latavg;
-            if (cptavg > c_baseline)
-                cptavg -= c_baseline;
+            if (cptavg > cyc_baseline)
+                cptavg -= cyc_baseline;
             cptavgtot += cptavg;
 
             cptmin = args->latmin;
-            if (cptmin > c_baseline) {
-                cptmin -= c_baseline;
+            if (cptmin > cyc_baseline) {
+                cptmin -= cyc_baseline;
                 suspicious = " ";
             } else {
                 suspicious = "*";
@@ -436,17 +468,41 @@ main(int argc, char **argv)
             if (cptmin < cptmintot)
                 cptmintot = cptmin;
 
+            calls_total += args->calls;
+
+            if (!calls_width)
+                calls_width = snprintf(NULL, 0, " %4lu", args->calls * posparamv->argc);
+
+            if (headers) {
+                printf("\n%3s %5s %8s %*s %10s %7s %10s %7s  %7s\n",
+                       "", "MHz", "seconds", calls_width, "tot",
+                       "avg", "avg", "max", "min", "min");
+
+                printf("%3s %5s %8s %*s %10s %7s %10s %7s  %7s  %-*s  %s\n",
+                       (verbosity > 0) ? "CPU" : "-",
+                       (USE_CLOCK) ? "CLK" : "TSC",
+                       "ELAPSED",
+                       calls_width, "CALLS",
+                       "MCALLS/S", (USE_CLOCK) ? "NSECS" : "CYCLES",
+                       "MCALLS/S", (USE_CLOCK) ? "NSECS" : "CYCLES",
+                       "NSECS",
+                       name_width, "TEST", "DESC");
+
+                headers = false;
+            }
+
             if (verbosity > 0) {
-                printf("%3u %5lu %8.3lf %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
+                printf("%3u %5lu %8.3lf %*lu %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
                        args->cpu, tsc_freq / 1000000,
                        cycles / tsc_freq,
+                       calls_width, args->calls,
                        tsc_freq / (cptavg * 1000000),
                        cptavg,
                        tsc_freq / (cptmin * 1000000),
                        cptmin,
                        suspicious,
                        (cptmin * 1000000000.0) / tsc_freq,
-                       namewidth, test->name, test->desc);
+                       name_width, test->name, test->desc);
             }
         }
 
@@ -459,20 +515,21 @@ main(int argc, char **argv)
             suspicious = " ";
         }
 
-        printf("%3s %5lu %8.3lf %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
+        printf("%3s %5lu %8.3lf %*lu %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
                "-", tsc_freq / 1000000,
                (cyclestot / tsc_freq) / posparamv->argc,
+               calls_width, calls_total,
                tsc_freq / (cptavg * 1000000),
                cptavg,
                tsc_freq / (cptmin * 1000000),
                cptmin,
                suspicious,
                (cptmin * 1000000000.0) / tsc_freq,
-               namewidth, test->name, test->desc);
+               name_width, test->name, test->desc);
         fflush(stdout);
 
-        if (!c_baseline)
-            c_baseline = cptmin;
+        if (!cyc_baseline)
+            cyc_baseline = cptmin;
     }
 
     free(tdargsv);
