@@ -12,105 +12,118 @@
 #include <semaphore.h>
 #include <pthread.h>
 
-union testdata {
-    struct {
-        atomic_ullong cnt;
-    } inc;
-
-    struct {
-        struct timespec ts;
-    } clock;
-
-    struct {
-        uint aux;
-    } rdtsc;
-
-    struct {
-        uint64_t state[2];
-    } xoroshiro;
-
-    struct {
-        pthread_mutex_t mtx;
-        uint64_t        cnt;
-    } mutex;
-
-    struct {
-        atomic_ullong head;
-        atomic_ullong tail;
-        uint64_t      cnt;
-    } ticket;
-
-    struct {
-        atomic_int lock;
-        uint64_t   cnt;
-    } spin;
-
-    struct {
-        pthread_spinlock_t lock;
-        uint64_t           cnt;
-    } ptspin;
-
-    struct {
-        sem_t    sem;
-        uint64_t cnt;
-        int      initval;
-    } sem;
-
-    struct {
-        struct lfstack *lfstack;
-        int             initval;
-    } lfstack;
-
-    struct {
-        atomic_int  lock;
-        void       *head;
-        int         initval;
-    } slstack;
+struct inc {
+    atomic_ullong cnt;
 };
 
-extern uintptr_t subr_baseline(union testdata *data);
+struct clock {
+    struct timespec ts;
+};
 
-extern uintptr_t subr_inc_tls(union testdata *data);
-extern uintptr_t subr_inc_atomic(union testdata *data);
+struct tsc {
+    uint aux;
+};
+
+struct prng {
+    uint64_t state[2];
+};
+
+struct mutex {
+    pthread_mutex_t mtx;
+    uint64_t        cnt;
+};
+
+struct ticket {
+    atomic_ullong head;
+    atomic_ullong tail;
+    uint64_t      cnt;
+};
+
+struct spin {
+    atomic_int lock;
+    uint64_t   cnt;
+};
+
+struct ptspin {
+    pthread_spinlock_t lock;
+    uint64_t           cnt;
+};
+
+struct sema {
+    sem_t    sema;
+    uint64_t cnt;
+};
+
+struct stack_lf {
+    struct lfstack *lfstack;
+};
+
+struct stack_sl {
+    atomic_int  lock;
+    void       *head;
+};
+
+struct testdata {
+    union {
+        struct inc      inc;
+        struct clock    clock;
+        struct tsc      tsc;
+        struct prng     prng;
+        struct mutex    mutex;
+        struct ticket   ticket;
+        struct spin     spin;
+        struct ptspin   ptspin;
+        struct sema     sema;
+        struct stack_lf lfstack;
+        struct stack_sl slstack;
+    };
+
+    uint cpumax;
+};
+
+extern uintptr_t subr_baseline(struct testdata *data);
+
+extern uintptr_t subr_inc_tls(struct testdata *data);
+extern uintptr_t subr_inc_atomic(struct testdata *data);
 
 #if __amd64__
-extern uintptr_t subr_rdtsc(union testdata *data);
-extern uintptr_t subr_rdtscp(union testdata *data);
-extern uintptr_t subr_cpuid(union testdata *data);
-extern uintptr_t subr_lsl(union testdata *data);
-#endif
+extern uintptr_t subr_rdtsc(struct testdata *data);
+extern uintptr_t subr_rdtscp(struct testdata *data);
+extern uintptr_t subr_cpuid(struct testdata *data);
+extern uintptr_t subr_lsl(struct testdata *data);
 
 #ifdef __RDPID__
-extern uintptr_t subr_rdpid(union testdata *data);
+extern uintptr_t subr_rdpid(struct testdata *data);
+#endif
 #endif
 
 #if __linux
-extern uintptr_t subr_sched_getcpu(union testdata *data);
+extern uintptr_t subr_sched_getcpu(struct testdata *data);
 #endif
 
-extern int subr_xoroshiro_init(union testdata *data);
-extern uintptr_t subr_xoroshiro(union testdata *data);
-extern uintptr_t subr_mod127(union testdata *data);
-extern uintptr_t subr_mod128(union testdata *data);
+extern int subr_xoroshiro_init(struct testdata *data);
+extern uintptr_t subr_xoroshiro(struct testdata *data);
+extern uintptr_t subr_mod127(struct testdata *data);
+extern uintptr_t subr_mod128(struct testdata *data);
 
-extern uintptr_t subr_clock(union testdata *data);
+extern uintptr_t subr_clock(struct testdata *data);
 
-extern uintptr_t subr_ticket(union testdata *data);
-extern uintptr_t subr_spin(union testdata *data);
+extern uintptr_t subr_ticket(struct testdata *data);
+extern uintptr_t subr_spin(struct testdata *data);
 
-extern int subr_ptspin_init(union testdata *data);
-extern uintptr_t subr_ptspin(union testdata *data);
+extern int subr_ptspin_init(struct testdata *data);
+extern uintptr_t subr_ptspin(struct testdata *data);
 
-extern int subr_mutex_init(union testdata *data);
-extern uintptr_t subr_mutex(union testdata *data);
+extern int subr_mutex_init(struct testdata *data);
+extern uintptr_t subr_mutex(struct testdata *data);
 
-extern int subr_sem_init(union testdata *data);
-extern uintptr_t subr_sem(union testdata *data);
+extern int subr_sem_init(struct testdata *data);
+extern uintptr_t subr_sem(struct testdata *data);
 
-extern int subr_lfstack_init(union testdata *data);
-extern uintptr_t subr_lfstack(union testdata *data);
+extern int subr_lfstack_init(struct testdata *data);
+extern uintptr_t subr_lfstack(struct testdata *data);
 
-extern int subr_slstack_init(union testdata *data);
-extern uintptr_t subr_slstack(union testdata *data);
+extern int subr_slstack_init(struct testdata *data);
+extern uintptr_t subr_slstack(struct testdata *data);
 
 #endif

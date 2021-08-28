@@ -85,24 +85,24 @@ struct clp_option optionv[] = {
 };
 
 struct test {
-    uintptr_t (*func)(union testdata *);
-    int       (*init)(union testdata *);
+    uintptr_t (*func)(struct testdata *);
+    int       (*init)(struct testdata *);
     bool        shared;
     const char *name;
     const char *desc;
 };
 
 struct tdargs {
-    union testdata *data;
-    pthread_t       tid;
-    uint            cpu;
-    struct test    *test;
-    uint64_t        c_start;
-    uint64_t        c_stop;
-    double          latmin;
-    double          latavg;
+    struct testdata *data;
+    pthread_t        tid;
+    uint             cpu;
+    struct test     *test;
+    uint64_t         c_start;
+    uint64_t         c_stop;
+    double           latmin;
+    double           latavg;
 
-    union testdata testdata __aligned(128);
+    struct testdata testdata __aligned(128);
 };
 
 struct test testv[] = {
@@ -117,9 +117,9 @@ struct test testv[] = {
     { subr_rdtscp,                     NULL, 0, "rdtscp",        "rdtscp (rdtsc+rdpid)" },
     { subr_cpuid,                      NULL, 0, "cpuid",         "cpuid (serialization)" },
     { subr_lsl,                        NULL, 0, "lsl",           "getcpu" },
-#endif
 #ifdef __RDPID__
     { subr_rdpid,                      NULL, 0, "rdpid",         "getcpu" },
+#endif
 #endif
 #if __linux__
     { subr_sched_getcpu,               NULL, 0, "sched_getcpu",  "getcpu" },
@@ -131,6 +131,7 @@ struct test testv[] = {
     { subr_mutex,           subr_mutex_init, 1, "mutex-pthread", "lock+inc+unlock" },
     { subr_sem,               subr_sem_init, 1, "semaphore",     "wait+inc+post" },
     { subr_slstack,       subr_slstack_init, 1, "slstack",       "pop+inc+push (spinlock)" },
+    { subr_lfstack,       subr_lfstack_init, 1, "lfstack",       "pop+inc+push (lockfree)" },
     { NULL }
 };
 
@@ -153,10 +154,10 @@ eprint(int xerrno, const char *fmt, ...)
 static void *
 test_main(void *arg)
 {
-    uintptr_t (*func)(union testdata *);
+    uintptr_t (*func)(struct testdata *);
     struct tdargs *args = arg;
     double latmin, latavg;
-    union testdata *data;
+    struct testdata *data;
     struct test *test;
     cpuset_t nmask;
     long i;
@@ -359,9 +360,6 @@ main(int argc, char **argv)
                namewidth, "TEST", "DESC");
     }
 
-    if (semval < 1)
-        semval = posparamv->argc;
-
     c_baseline = 0;
 
     if (setpriority(PRIO_PROCESS, 0, -20) && verbosity > 0)
@@ -386,12 +384,7 @@ main(int argc, char **argv)
             args->c_stop = c_start + duration * tsc_freq;
             args->test = test;
             args->data = &args->testdata;
-
-            if (test->func == subr_sem)
-                args->data->sem.initval = semval;
-
-            if (test->func == subr_slstack)
-                args->data->slstack.initval = posparamv->argc;
+            args->data->cpumax = posparamv->argc;
 
             if (test->init)
                 test->init(args->data);

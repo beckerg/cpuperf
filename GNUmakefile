@@ -2,7 +2,7 @@
 
 PROG := cpuperf
 
-SRC := clp.c subr.c xoroshiro.c ${patsubst %,%.c,${PROG}}
+SRC := clp.c subr.c lfstack.c xoroshiro.c ${patsubst %,%.c,${PROG}}
 OBJ := ${SRC:.c=.o}
 
 PROG_VERSION := $(shell git describe --abbrev=8 --dirty --always --tags)
@@ -12,7 +12,6 @@ INCLUDE  := -I. -I../src
 CFLAGS   += -std=c11 -Wall -O2 -march=native -g ${INCLUDE}
 CPPFLAGS += -DPROG_VERSION=\"${PROG_VERSION}\" -DNDEBUG
 LDLIBS   += -lpthread
-VPATH    := ../src
 
 ifeq ($(PLATFORM),linux)
 CPPFLAGS += -D_GNU_SOURCE
