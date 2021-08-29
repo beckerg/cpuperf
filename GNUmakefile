@@ -9,7 +9,7 @@ PROG_VERSION := $(shell git describe --abbrev=8 --dirty --always --tags)
 PLATFORM := ${shell uname -s | tr '[:upper:]' '[:lower:]'}
 
 INCLUDE  := -I. -I../src
-CFLAGS   += -std=c11 -Wall -O2 -march=native -g ${INCLUDE}
+CFLAGS   += -std=c11 -Wall -Wextra -O2 -march=native -g ${INCLUDE}
 CPPFLAGS += -DPROG_VERSION=\"1.0.0-${PROG_VERSION}\" -DNDEBUG
 LDLIBS   += -lpthread
 

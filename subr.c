@@ -43,11 +43,18 @@
 #include "lfstack.h"
 #include "subr.h"
 
+#ifndef __unused
+#define __unused            __attribute__((__unused__))
+#endif
+
 #define atomic_load_acq(_ptr) \
     atomic_load_explicit((_ptr), memory_order_acquire)
 
 #define atomic_inc(_ptr) \
     atomic_fetch_add_explicit((_ptr), 1, memory_order_relaxed)
+
+#define atomic_dec(_ptr) \
+    atomic_fetch_add_explicit((_ptr), -1, memory_order_relaxed)
 
 #define atomic_inc_acq(_ptr) \
     atomic_fetch_add_explicit((_ptr), 1, memory_order_acquire)
@@ -64,13 +71,13 @@
                                             memory_order_release, memory_order_relaxed)
 
 uintptr_t
-subr_baseline(struct testdata *data)
+subr_baseline(struct testdata *data __unused)
 {
     return 0;
 }
 
 uintptr_t
-subr_inc_tls(struct testdata *data)
+subr_inc_tls(struct testdata *data __unused)
 {
     static __thread uint64_t tls;
 
@@ -85,7 +92,7 @@ subr_inc_atomic(struct testdata *data)
 
 #if HAVE_RDTSC
 uintptr_t
-subr_rdtsc(struct testdata *data)
+subr_rdtsc(struct testdata *data __unused)
 {
     return _rdtsc();
 }
@@ -93,15 +100,28 @@ subr_rdtsc(struct testdata *data)
 
 #if HAVE_RDTSCP
 uintptr_t
-subr_rdtscp(struct testdata *data)
+subr_rdtscp(struct testdata *data __unused)
 {
     return __rdtscp(&data->tsc.aux);
 }
 #endif
 
+#if HAVE_RDRAND64
+uintptr_t
+subr_rdrand64(struct testdata *data __unused)
+{
+    unsigned long long val;
+
+    while (!_rdrand64_step(&val))
+        continue;
+
+    return val;
+}
+#endif
+
 #ifdef __RDPID__
 uintptr_t
-subr_rdpid(struct testdata *data)
+subr_rdpid(struct testdata *data __unused)
 {
     return _rdpid_u32();
 }
@@ -109,7 +129,7 @@ subr_rdpid(struct testdata *data)
 
 #if __amd64__
 uintptr_t
-subr_cpuid(struct testdata *data)
+subr_cpuid(struct testdata *data __unused)
 {
     __asm__ volatile ("cpuid" ::: "eax","ebx","ecx","edx","memory");
 
@@ -117,7 +137,7 @@ subr_cpuid(struct testdata *data)
 }
 
 uintptr_t
-subr_lsl(struct testdata *data)
+subr_lsl(struct testdata *data __unused)
 {
     uint cpu;
 
@@ -125,23 +145,48 @@ subr_lsl(struct testdata *data)
 
     return cpu & 0xfff;
 }
+
+uintptr_t
+subr_lfence(struct testdata *data __unused)
+{
+    _mm_lfence();
+
+    return 0;
+}
+
+uintptr_t
+subr_sfence(struct testdata *data __unused)
+{
+    _mm_sfence();
+
+    return 0;
+}
+
+uintptr_t
+subr_mfence(struct testdata *data __unused)
+{
+    _mm_mfence();
+
+    return 0;
+}
+
+uintptr_t
+subr_pause(struct testdata *data __unused)
+{
+    _mm_pause();
+
+    return 0;
+}
+
 #endif
 
 #if __linux__
 uintptr_t
-subr_sched_getcpu(struct testdata *data)
+subr_sched_getcpu(struct testdata *data __unused)
 {
     return sched_getcpu();
 }
 #endif
-
-int
-subr_xoroshiro_init(struct testdata *data)
-{
-    xoroshiro128plus_init(data->prng.state, 0);
-
-    return 0;
-}
 
 uintptr_t
 subr_xoroshiro(struct testdata *data)
@@ -197,12 +242,6 @@ subr_spin(struct testdata *data)
     return 0;
 }
 
-int
-subr_ptspin_init(struct testdata *data)
-{
-    return pthread_spin_init(&data->ptspin.lock, 0);
-}
-
 uintptr_t
 subr_ptspin(struct testdata *data)
 {
@@ -252,12 +291,6 @@ subr_ticket(struct testdata *data)
     return 0;
 }
 
-int
-subr_mutex_init(struct testdata *data)
-{
-    return pthread_mutex_init(&data->mutex.mtx, NULL);
-}
-
 uintptr_t
 subr_mutex(struct testdata *data)
 {
@@ -268,30 +301,24 @@ subr_mutex(struct testdata *data)
     return 0;
 }
 
-int
-subr_sem_init(struct testdata *data)
-{
-    return sem_init(&data->sema.sema, 0, data->cpumax);
-}
-
 uintptr_t
-subr_sem(struct testdata *data)
+subr_sema(struct testdata *data)
 {
     while (sem_wait(&data->sema.sema))
         continue;
 
-    data->sema.cnt++;
+    //data->sema.cnt++;
     sem_post(&data->sema.sema);
 
     return 0;
 }
 
-/* A lock-free stack implements a fixed size stack that can
- * push/pop pointers to user data structures.  Unlike the
- * spinlock based stack the lock-free stack does not need
- * any storage within the user data structure.
+/* A lock-free stack implements a fixed size stack that can push/pop
+ * pointers to user data structures.  Unlike the spinlock based stack
+ * (below) the lock-free stack does not require any storage within the
+ * user data structure.
  */
-int
+static int
 subr_lfstack_init(struct testdata *data)
 {
     struct lfstack *lfstack;
@@ -328,17 +355,18 @@ subr_lfstack(struct testdata *data)
     return 0;
 }
 
-/* A spinlock based stack uses a pointer within the user's data
- * structure to link freed items onto the stack and a simple
- * spinlock to protect the head of the list.  Unlike lfstack
- * this spinlock based stack has no item limit.
+/* A spinlock based stack uses a pointer within the user's data structure
+ * to link freed items onto the stack and a simple spinlock to protect
+ * the head of the list.  Unlike lfstack, this stack requires storage
+ * within the user's data structure for list linkage, but has no real
+ * item limit.
  */
 struct slnode {
     void  *next;
     long   cnt;
 };
 
-int
+static int
 subr_slstack_init(struct testdata *data)
 {
     int nelem = data->cpumax;
@@ -360,7 +388,7 @@ subr_slstack_init(struct testdata *data)
     return 0;
 }
 
-void
+static void
 subr_slstack_push(struct testdata *data, struct slnode *node)
 {
     subr_spin_lock(&data->slstack.lock);
@@ -369,14 +397,15 @@ subr_slstack_push(struct testdata *data, struct slnode *node)
     subr_spin_unlock(&data->slstack.lock);
 }
 
-struct slnode *
+static struct slnode *
 subr_slstack_pop(struct testdata *data)
 {
     struct slnode *node;
 
     subr_spin_lock(&data->slstack.lock);
     node = data->slstack.head;
-    data->slstack.head = node->next;
+    if (node)
+        data->slstack.head = node->next;
     subr_spin_unlock(&data->slstack.lock);
 
     return node;
@@ -392,4 +421,59 @@ subr_slstack(struct testdata *data)
     subr_slstack_push(data, node);
 
     return 0;
+}
+
+int
+subr_init(struct testdata *data, subr_func *func)
+{
+    if (atomic_inc(&data->refcnt) > 1)
+        return 0;
+
+    if (func == subr_xoroshiro) {
+        xoroshiro128plus_init(data->prng.state, 0);
+    }
+    else if (func == subr_ptspin) {
+        return pthread_spin_init(&data->ptspin.lock, 0);
+    }
+    else if (func == subr_mutex) {
+        return pthread_mutex_init(&data->mutex.mtx, NULL);
+    }
+    else if (func == subr_sema) {
+        return sem_init(&data->sema.sema, 0, data->cpumax);
+    }
+    else if (func == subr_lfstack) {
+        return subr_lfstack_init(data);
+    }
+    else if (func == subr_slstack) {
+        return subr_slstack_init(data);
+    }
+
+    return 0;
+}
+
+void
+subr_fini(struct testdata *data, subr_func *func)
+{
+    if (atomic_dec(&data->refcnt) > 1)
+        return;
+
+    if (func == subr_ptspin) {
+        pthread_spin_destroy(&data->ptspin.lock);
+    }
+    else if (func == subr_mutex) {
+        pthread_mutex_destroy(&data->mutex.mtx);
+    }
+    else if (func == subr_sema) {
+        sem_destroy(&data->sema.sema);
+    }
+    else if (func == subr_lfstack) {
+        lfstack_destroy(data->lfstack.lfstack, free);
+    }
+    else if (func == subr_slstack) {
+        struct slnode *node;
+
+        while (( node = subr_slstack_pop(data) )) {
+            free(node);
+        }
+    }
 }

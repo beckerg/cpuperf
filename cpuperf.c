@@ -96,8 +96,7 @@ struct clp_option optionv[] = {
 };
 
 struct test {
-    uintptr_t (*func)(struct testdata *);
-    int       (*init)(struct testdata *);
+    subr_func  *func;
     bool        shared;
     bool        matched;
     const char *name;
@@ -107,7 +106,7 @@ struct test {
 struct tdargs {
     struct testdata *data;
     pthread_t        tid;
-    uint             cpu;
+    int              cpu;
     struct test     *test;
     uint64_t         cyc_start;
     uint64_t         cyc_stop;
@@ -119,37 +118,45 @@ struct tdargs {
 };
 
 struct test testv[] = {
-    { subr_baseline,                   NULL, 0, 1, "baseline",       "baseline" },
-    { subr_inc_tls,                    NULL, 0, 0, "inc-tls",        "inc tls var" },
-    { subr_inc_atomic,                 NULL, 0, 0, "inc-atomic",     "inc atomic (relaxed)" },
-    { subr_xoroshiro,   subr_xoroshiro_init, 0, 0, "prng-xoroshiro", "128-bit prng" },
-    { subr_mod128,      subr_xoroshiro_init, 0, 0, "prng-mod128",    "xoroshiro % 128" },
-    { subr_mod127,      subr_xoroshiro_init, 0, 0, "prng-mod127",    "xoroshiro % 127" },
+    { subr_baseline,      0, 1, "baseline",            "baseline" },
+    { subr_inc_tls,       0, 0, "inc-tls",             "inc tls var" },
+    { subr_inc_atomic,    0, 0, "inc-atomic",          "inc atomic (relaxed)" },
+    { subr_xoroshiro,     0, 0, "prng-xoroshiro",      "128-bit prng" },
+    { subr_mod128,        0, 0, "prng-mod128",         "xoroshiro % 128" },
+    { subr_mod127,        0, 0, "prng-mod127",         "xoroshiro % 127" },
+#if HAVE_RDRAND64
+    { subr_rdrand64,      0, 0, "cpu-rdrand64",        "64-bit prng" },
+#endif
 #if HAVE_RDTSC
-    { subr_rdtsc,                      NULL, 0, 0, "cpu-rdtsc",  "rdtsc" },
+    { subr_rdtsc,         0, 0, "cpu-rdtsc",           "rdtsc" },
 #endif
 #if HAVE_RDTSCP
-    { subr_rdtscp,                     NULL, 0, 0, "cpu-rdtscp", "rdtscp (rdtsc+rdpid)" },
+    { subr_rdtscp,        0, 0, "cpu-rdtscp",          "rdtsc+rdpid" },
 #endif
 #ifdef __RDPID__
-    { subr_rdpid,                      NULL, 0, 0, "cpu-rdpid",  "getcpu" },
-#endif
-#if __amd64__
-    { subr_cpuid,                      NULL, 0, 0, "cpu-cpuid",  "(serialization)" },
-    { subr_lsl,                        NULL, 0, 0, "cpu-lsl",    "getcpu" },
+    { subr_rdpid,         0, 0, "cpu-rdpid",           "rdpid" },
 #endif
 #if __linux__
-    { subr_sched_getcpu,               NULL, 0, 0, "sys-sched-getcpu",   "getcpu" },
+    { subr_sched_getcpu,  0, 0, "sys-sched-getcpu",    "rdpid" },
 #endif
-    { subr_clock,                      NULL, 0, 0, "sys-clock-gettime",  "monotonic" },
-    { subr_ticket,                     NULL, 1, 0, "lock-spin-ticket",   "lock+inc+unlock" },
-    { subr_spin,                       NULL, 1, 0, "lock-spin-cmpxchg",  "lock+inc+unlock" },
-    { subr_ptspin,         subr_ptspin_init, 1, 0, "lock-spin-pthread",  "lock+inc+unlock" },
-    { subr_mutex,           subr_mutex_init, 1, 0, "lock-mutex-pthread", "lock+inc+unlock" },
-    { subr_sem,               subr_sem_init, 1, 0, "lock-semaphore",     "wait+inc+post" },
-    { subr_slstack,       subr_slstack_init, 1, 0, "stack-sl", "pop+inc+push (spinlock)" },
-    { subr_lfstack,       subr_lfstack_init, 1, 0, "stack-lf", "pop+inc+push (lockfree)" },
-    { NULL }
+#if __amd64__
+    { subr_lsl,           0, 0, "cpu-lsl",             "rdpid" },
+
+    { subr_cpuid,         0, 0, "cpu-cpuid",           "serialize instr execution" },
+    { subr_lfence,        0, 0, "cpu-lfence",          "serialize mem loads" },
+    { subr_sfence,        0, 0, "cpu-sfence",          "serialize mem stores" },
+    { subr_mfence,        0, 0, "cpu-mfence",          "serialize mem loads+stores" },
+    { subr_pause,         0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
+#endif
+    { subr_clock,         0, 0, "sys-clock-gettime",   "monotonic" },
+    { subr_ticket,        1, 0, "lock-ticket",         "lock+inc+unlock" },
+    { subr_spin,          1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
+    { subr_ptspin,        1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
+    { subr_mutex,         1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
+    { subr_sema,          1, 0, "lock-semaphore",      "wait+inc+post (uncontended)" },
+    { subr_slstack,       1, 0, "stack-spinlock",      "pop+inc+push" },
+    { subr_lfstack,       1, 0, "stack-lockfree",      "pop+inc+push" },
+    { NULL, 0, 0, NULL, NULL }
 };
 
 static void
@@ -211,22 +218,25 @@ itv_stop(void)
 static void *
 test_main(void *arg)
 {
-    uintptr_t (*func)(struct testdata *);
     struct tdargs *args = arg;
     double latmin, latavg;
     struct testdata *data;
     struct test *test;
-    cpuset_t nmask;
-    u_long i;
+    subr_func *func;
+    u_long iters;
     int rc;
 
-    CPU_ZERO(&nmask);
-    CPU_SET(args->cpu, &nmask);
+    if (args->cpu >= 0) {
+        cpuset_t nmask;
 
-    rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
-    if (rc) {
-        eprint(EINVAL, "unable to set cpu affinity to CPU %u", args->cpu);
-        pthread_exit(NULL);
+        CPU_ZERO(&nmask);
+        CPU_SET(args->cpu, &nmask);
+
+        rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
+        if (rc) {
+            eprint(EINVAL, "unable to set cpu affinity to CPU %d", args->cpu);
+            pthread_exit(NULL);
+        }
     }
 
     test = args->test;
@@ -235,6 +245,7 @@ test_main(void *arg)
 
     latmin = DBL_MAX;
     latavg = 0;
+    iters = 0;
 
     /* Spin here to synchronize with all threads and maybe kick in turbo boost...
      */
@@ -244,23 +255,24 @@ test_main(void *arg)
     if ((shared && test->shared) || unserialized) {
         args->cyc_start = itv_start();
 
-        for (i = 0; testrunning; ++i) {
+        while (testrunning) {
             func(data);
             func(data);
             func(data);
             func(data);
+            ++iters;
         }
 
         args->cyc_stop = itv_stop();
 
-        args->latavg = (args->cyc_stop - args->cyc_start) / (i * 4.0);
+        args->latavg = (args->cyc_stop - args->cyc_start) / (iters * 4.0);
         args->latmin = args->latavg;
-        args->calls = i * 4;
+        args->calls = iters * 4;
     }
     else {
         args->cyc_start = itv_start();
 
-        for (i = 0; testrunning; ++i) {
+        while (testrunning) {
             uint64_t start, stop;
 
             start = itv_start();
@@ -272,13 +284,15 @@ test_main(void *arg)
             latavg += stop - start;
             if (stop - start < latmin)
                 latmin = stop - start;
+
+            ++iters;
         }
 
         args->cyc_stop = itv_stop();
 
-        args->latavg = latavg / i;
+        args->latavg = latavg / iters;
         args->latmin = latmin;
-        args->calls = i;
+        args->calls = iters;
     }
 
     pthread_exit(NULL);
@@ -384,6 +398,9 @@ main(int argc, char **argv)
     for (test = testv; test->name; ++test) {
         int w = strlen(test->name);
 
+        if (teststr && !test->matched)
+            continue;
+
         if (w > name_width)
             name_width = w;
     }
@@ -395,17 +412,20 @@ main(int argc, char **argv)
      */
     rc = pthread_getaffinity_np(pthread_self(), sizeof(omask), &omask);
     if (rc) {
-        eprint(0, "unable to get cpu affinity");
+        eprint(rc, "unable to get cpu affinity");
     } else {
         for (int i = 0; i < posparamv->argc; ++i) {
             int cpu = atoi(posparamv->argv[i]);
 
-            CPU_CLR(cpu, &omask);
+            if (cpu >= 0)
+                CPU_CLR(cpu, &omask);
         }
 
-        rc = pthread_setaffinity_np(pthread_self(), sizeof(omask), &omask);
-        if (rc) {
-            eprint(0, "unable to set leader cpu affinity");
+        if (CPU_COUNT(&omask) > 0) {
+            rc = pthread_setaffinity_np(pthread_self(), sizeof(omask), &omask);
+            if (rc) {
+                eprint(rc, "unable to set leader cpu affinity");
+            }
         }
     }
 
@@ -422,6 +442,8 @@ main(int argc, char **argv)
         cyc_start = itv_cycles() + tsc_freq;
         testrunning = true;
 
+        /* Start one test thread for each cpu given on the command line.
+         */
         for (int i = 0; i < posparamv->argc; ++i) {
             struct tdargs *args = tdargsv + i;
 
@@ -430,17 +452,17 @@ main(int argc, char **argv)
             args->cyc_stop = cyc_start + duration * tsc_freq;
             args->test = test;
             args->data = &args->testdata;
+            atomic_store(&args->data->refcnt, 0);
             args->data->cpumax = posparamv->argc;
-
-            if (test->init)
-                test->init(args->data);
 
             if (shared && test->shared)
                 args->data = &tdargsv->testdata;
 
+            subr_init(args->data, test->func);
+
             rc = pthread_create(&args->tid, NULL, test_main, args);
             if (rc) {
-                eprint(rc, "unable to create pthread %d for cpu %u", i, args->cpu);
+                eprint(rc, "unable to create pthread %d for cpu %d", i, args->cpu);
                 exit(EX_OSERR);
             }
         }
@@ -461,9 +483,11 @@ main(int argc, char **argv)
 
             rc = pthread_join(args->tid, &res);
             if (rc) {
-                eprint(rc, "unable to join pthread %d for cpu %u", i, args->cpu);
+                eprint(rc, "unable to join pthread %d for cpu %d", i, args->cpu);
                 continue;
             }
+
+            subr_fini(args->data, test->func);
 
             cycles = args->cyc_stop - args->cyc_start;
             cyclestot += cycles;
@@ -507,7 +531,7 @@ main(int argc, char **argv)
             }
 
             if (verbosity > 0) {
-                printf("%3u %5lu %8.3lf %*lu %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
+                printf("%3d %5lu %8.3lf %*lu %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
                        args->cpu, tsc_freq / 1000000,
                        cycles / tsc_freq,
                        calls_width, args->calls,

@@ -17,17 +17,8 @@
 
 #define HAVE_RDTSC          (__has_builtin(__builtin_ia32_rdtsc))
 #define HAVE_RDTSCP         (__has_builtin(__builtin_ia32_rdtscp))
+#define HAVE_RDRAND64       (__has_builtin(__builtin_ia32_rdrand64_step))
 #define HAVE_PAUSE          (__has_builtin(__builtin_ia32_pause))
-
-static inline void
-cpu_pause(void)
-{
-#if HAVE_PAUSE
-    _mm_pause();
-#else
-    usleep(1);
-#endif
-}
 
 struct inc {
     atomic_ullong cnt;
@@ -95,58 +86,73 @@ struct testdata {
         struct stack_sl slstack;
     };
 
-    uint cpumax;
+    atomic_int refcnt;
+    uint       cpumax;
 };
 
-extern uintptr_t subr_baseline(struct testdata *data);
+typedef uintptr_t subr_func(struct testdata *);
 
-extern uintptr_t subr_inc_tls(struct testdata *data);
-extern uintptr_t subr_inc_atomic(struct testdata *data);
+static inline void
+cpu_pause(void)
+{
+#if HAVE_PAUSE
+    _mm_pause();
+#else
+    usleep(1);
+#endif
+}
+
+
+extern subr_func subr_baseline;
+
+extern subr_func subr_inc_tls;
+extern subr_func subr_inc_atomic;
 
 #if HAVE_RDTSC
-extern uintptr_t subr_rdtsc(struct testdata *data);
+extern subr_func subr_rdtsc;
 #endif
 
 #if HAVE_RDTSCP
-extern uintptr_t subr_rdtscp(struct testdata *data);
+extern subr_func subr_rdtscp;
+#endif
+
+#if HAVE_RDRAND64
+extern subr_func subr_rdrand64;
 #endif
 
 #ifdef __RDPID__
-extern uintptr_t subr_rdpid(struct testdata *data);
+extern subr_func subr_rdpid;
 #endif
 
 #if __amd64__
-extern uintptr_t subr_cpuid(struct testdata *data);
-extern uintptr_t subr_lsl(struct testdata *data);
+extern subr_func subr_cpuid;
+extern subr_func subr_lsl;
+extern subr_func subr_lfence;
+extern subr_func subr_sfence;
+extern subr_func subr_mfence;
+extern subr_func subr_pause;
 #endif
 
 #if __linux
-extern uintptr_t subr_sched_getcpu(struct testdata *data);
+extern subr_func subr_sched_getcpu;
 #endif
 
-extern int subr_xoroshiro_init(struct testdata *data);
-extern uintptr_t subr_xoroshiro(struct testdata *data);
-extern uintptr_t subr_mod127(struct testdata *data);
-extern uintptr_t subr_mod128(struct testdata *data);
+extern subr_func subr_xoroshiro;
+extern subr_func subr_mod127;
+extern subr_func subr_mod128;
 
-extern uintptr_t subr_clock(struct testdata *data);
+extern subr_func subr_clock;
 
-extern uintptr_t subr_ticket(struct testdata *data);
-extern uintptr_t subr_spin(struct testdata *data);
+extern subr_func subr_ticket;
+extern subr_func subr_spin;
+extern subr_func subr_ptspin;
+extern subr_func subr_mutex;
+extern subr_func subr_sema;
 
-extern int subr_ptspin_init(struct testdata *data);
-extern uintptr_t subr_ptspin(struct testdata *data);
+extern subr_func subr_lfstack;
+extern subr_func subr_slstack;
 
-extern int subr_mutex_init(struct testdata *data);
-extern uintptr_t subr_mutex(struct testdata *data);
-
-extern int subr_sem_init(struct testdata *data);
-extern uintptr_t subr_sem(struct testdata *data);
-
-extern int subr_lfstack_init(struct testdata *data);
-extern uintptr_t subr_lfstack(struct testdata *data);
-
-extern int subr_slstack_init(struct testdata *data);
-extern uintptr_t subr_slstack(struct testdata *data);
+extern int  subr_init(struct testdata *data, subr_func *func);
+extern void subr_fini(struct testdata *data, subr_func *func);
 
 #endif

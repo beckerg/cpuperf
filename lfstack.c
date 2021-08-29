@@ -50,7 +50,7 @@ lfstack_create(u_int nodemax)
     size_t align, sz;
 
     sz = sizeof(*lfstack) + sizeof(struct lfstack_node) * nodemax;
-	align = __alignof(*lfstack);
+    align = __alignof(*lfstack);
 
     lfstack = aligned_alloc(align, roundup(sz, align));
 
@@ -60,35 +60,35 @@ lfstack_create(u_int nodemax)
 struct lfstack *
 lfstack_init(void *buf, size_t bufsz)
 {
-	struct lfstack *lfstack = buf;
-	u_long nodemax;
+    struct lfstack *lfstack = buf;
+    u_long nodemax;
 
-	if (!buf || bufsz < sizeof(*lfstack) + sizeof(struct lfstack_node))
-		return NULL;
+    if (!buf || bufsz < sizeof(*lfstack) + sizeof(struct lfstack_node))
+        return NULL;
 
-	nodemax = (bufsz - sizeof(*lfstack)) / sizeof(struct lfstack_node);
+    nodemax = (bufsz - sizeof(*lfstack)) / sizeof(struct lfstack_node);
 
-	memset(lfstack, 0, sizeof(*lfstack));
-	atomic_init(&lfstack->nodec, 0);
-	lfstack->nodemax = nodemax;
+    memset(lfstack, 0, sizeof(*lfstack));
+    atomic_init(&lfstack->nodec, 0);
+    lfstack->nodemax = nodemax;
 
-	return lfstack;
+    return lfstack;
 }
 
 void
 lfstack_destroy(struct lfstack *lfstack, void (*dtor)(void *arg))
 {
-	if (dtor) {
-		struct lfstack_node *node;
-		struct lfstack_impl head;
+    if (dtor) {
+        struct lfstack_node *node;
+        struct lfstack_impl head;
 
-		head = atomic_load(&lfstack->stack);
-		node = head.head;
+        head = atomic_load(&lfstack->stack);
+        node = head.head;
 
-		while (node) {
-			dtor(node->data);
-			node = node->next;
-		}
+        while (node) {
+            dtor(node->data);
+            node = node->next;
+        }
     }
 
     free(lfstack);
@@ -101,9 +101,9 @@ lfstack_push(struct lfstack *lfstack, void *data)
     struct lfstack_node *node;
 
     /* First, allocate a stack node from the node cache if it's not empty,
-	 * otherwise try to allocate one from the vector of embedded nodes.
-	 */
-	orig = atomic_load(&lfstack->nodecache);
+     * otherwise try to allocate one from the vector of embedded nodes.
+     */
+    orig = atomic_load(&lfstack->nodecache);
 
     do {
         if (!orig.head) {
@@ -123,9 +123,9 @@ lfstack_push(struct lfstack *lfstack, void *data)
 
     node = orig.head;
 
-	/* Next, add the user-data pointer to the node then push
-	 * the node onto the stack.
-	 */
+    /* Next, add the user-data pointer to the node then push
+     * the node onto the stack.
+     */
   push:
     node->data = data;
 
@@ -137,7 +137,7 @@ lfstack_push(struct lfstack *lfstack, void *data)
         next.gen = orig.gen + 1;
     } while (!atomic_compare_exchange_weak(&lfstack->stack, &orig, next));
 
-	return true;
+    return true;
 }
 
 
@@ -148,9 +148,9 @@ lfstack_pop(struct lfstack *lfstack)
     struct lfstack_node *node;
     void *data;
 
-	/* First, try to remove a node from the top of the stack.
-	 */
-	orig = atomic_load(&lfstack->stack);
+    /* First, try to remove a node from the top of the stack.
+     */
+    orig = atomic_load(&lfstack->stack);
 
     do {
         if (!orig.head) {
@@ -161,9 +161,9 @@ lfstack_pop(struct lfstack *lfstack)
         next.gen = orig.gen + 1;
     } while (!atomic_compare_exchange_weak(&lfstack->stack, &orig, next));
 
-	/* Next, extract the user-data pointer from the node
-	 * then push it onto the node cache.
-	 */
+    /* Next, extract the user-data pointer from the node
+     * then push it onto the node cache.
+     */
     node = orig.head;
     data = node->data;
 
