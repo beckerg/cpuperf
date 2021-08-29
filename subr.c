@@ -35,13 +35,13 @@
 #include <immintrin.h>
 #include <x86intrin.h>
 
-#include "xoroshiro.h"
-#include "lfstack.h"
-#include "subr.h"
-
 #if __linux__
 #include <sched.h>
 #endif
+
+#include "xoroshiro.h"
+#include "lfstack.h"
+#include "subr.h"
 
 #define atomic_load_acq(_ptr) \
     atomic_load_explicit((_ptr), memory_order_acquire)
@@ -176,7 +176,7 @@ subr_spin_lock(atomic_int *ptr)
 
     while (!atomic_cmpxchg_acq(ptr, &old, 1)) {
         while (atomic_load_explicit(ptr, memory_order_relaxed))
-            _mm_pause();
+            cpu_pause();
         old = 0;
     }
 }
@@ -222,13 +222,16 @@ subr_ticket_lock(struct testdata *data)
     head = atomic_inc(&data->ticket.head);
 
     while ((tail = atomic_load_acq(&data->ticket.tail)) < head) {
-#if __amd64__
+
+#if HAVE_RDTSC
         uint64_t stop = _rdtsc() + (head - tail) * 256;
 
-        _mm_pause();
+        cpu_pause();
 
         while (_rdtsc() < stop)
             continue;
+#else
+        cpu_pause();
 #endif
     }
 }

@@ -10,7 +10,7 @@ PLATFORM := ${shell uname -s | tr '[:upper:]' '[:lower:]'}
 
 INCLUDE  := -I. -I../src
 CFLAGS   += -std=c11 -Wall -O2 -march=native -g ${INCLUDE}
-CPPFLAGS += -DPROG_VERSION=\"${PROG_VERSION}\" -DNDEBUG
+CPPFLAGS += -DPROG_VERSION=\"1.0.0-${PROG_VERSION}\" -DNDEBUG
 LDLIBS   += -lpthread
 
 ifeq ($(PLATFORM),linux)

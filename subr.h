@@ -12,6 +12,9 @@
 #include <semaphore.h>
 #include <pthread.h>
 
+#include <immintrin.h>
+#include <x86intrin.h>
+
 #define HAVE_RDTSC          (__has_builtin(__builtin_ia32_rdtsc))
 #define HAVE_RDTSCP         (__has_builtin(__builtin_ia32_rdtscp))
 #define HAVE_PAUSE          (__has_builtin(__builtin_ia32_pause))

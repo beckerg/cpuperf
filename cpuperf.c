@@ -50,12 +50,12 @@
 typedef cpu_set_t cpuset_t;
 #endif
 
-#include "clp.h"
-#include "subr.h"
-
 #ifndef __aligned
 #define __aligned(_size)    __attribute__((__aligned__(_size)))
 #endif
+
+#include "clp.h"
+#include "subr.h"
 
 /* By default we use rdtsc() to measure timing intervals, but if
  * it's not available we'll fall back to using clock_gettime().
@@ -65,9 +65,11 @@ typedef cpu_set_t cpuset_t;
 #endif
 
 bool headers, shared, unserialized;
+char version[] = PROG_VERSION;
 uint64_t tsc_freq;
 time_t duration;
 char *progname;
+char *teststr;
 int verbosity;
 int left;
 
@@ -79,14 +81,16 @@ struct clp_posparam posparamv[] = {
 };
 
 struct clp_option optionv[] = {
-    CLP_OPTION('d', time_t,   duration,     NULL, "specify max duration (seconds)"),
-    CLP_OPTION('H', bool,     headers,      NULL, "suppress headers"),
+    CLP_OPTION('d',   time_t,      duration, NULL, "specify max duration (seconds)"),
+    CLP_OPTION('H',     bool,       headers, NULL, "suppress headers"),
 #if !USE_CLOCK
-    CLP_OPTION('f', uint64_t, tsc_freq,     NULL, "specify TSC frequency"),
+    CLP_OPTION('f', uint64_t,      tsc_freq, NULL, "specify TSC frequency"),
 #endif
-    CLP_OPTION('s', bool,     shared,       NULL, "let threads share data if applicable"),
-    CLP_OPTION('u', bool,     unserialized, NULL, "do not serialize test function calls"),
+    CLP_OPTION('s',     bool,        shared, NULL, "let threads share data if applicable"),
+    CLP_OPTION('t',   string,       teststr, NULL, "specify tests to run"),
+    CLP_OPTION('u',     bool,  unserialized, NULL, "do not serialize test function calls"),
     CLP_OPTION_VERBOSITY(verbosity),
+    CLP_OPTION_VERSION(version),
     CLP_OPTION_HELP,
     CLP_OPTION_END
 };
@@ -95,6 +99,7 @@ struct test {
     uintptr_t (*func)(struct testdata *);
     int       (*init)(struct testdata *);
     bool        shared;
+    bool        matched;
     const char *name;
     const char *desc;
 };
@@ -114,36 +119,36 @@ struct tdargs {
 };
 
 struct test testv[] = {
-    { subr_baseline,                   NULL, 0, "baseline",      "baseline" },
-    { subr_inc_tls,                    NULL, 0, "inc_tls",       "inc tls var" },
-    { subr_inc_atomic,                 NULL, 0, "inc_atomic",    "inc atomic (relaxed)" },
-    { subr_xoroshiro,   subr_xoroshiro_init, 0, "xoroshiro",     "128-bit prng" },
-    { subr_mod128,      subr_xoroshiro_init, 0, "mod128",        "xoroshiro % 128" },
-    { subr_mod127,      subr_xoroshiro_init, 0, "mod127",        "xoroshiro % 127" },
+    { subr_baseline,                   NULL, 0, 1, "baseline",       "baseline" },
+    { subr_inc_tls,                    NULL, 0, 0, "inc-tls",        "inc tls var" },
+    { subr_inc_atomic,                 NULL, 0, 0, "inc-atomic",     "inc atomic (relaxed)" },
+    { subr_xoroshiro,   subr_xoroshiro_init, 0, 0, "prng-xoroshiro", "128-bit prng" },
+    { subr_mod128,      subr_xoroshiro_init, 0, 0, "prng-mod128",    "xoroshiro % 128" },
+    { subr_mod127,      subr_xoroshiro_init, 0, 0, "prng-mod127",    "xoroshiro % 127" },
 #if HAVE_RDTSC
-    { subr_rdtsc,                      NULL, 0, "rdtsc",         "rdtsc" },
+    { subr_rdtsc,                      NULL, 0, 0, "cpu-rdtsc",  "rdtsc" },
 #endif
 #if HAVE_RDTSCP
-    { subr_rdtscp,                     NULL, 0, "rdtscp",        "rdtscp (rdtsc+rdpid)" },
+    { subr_rdtscp,                     NULL, 0, 0, "cpu-rdtscp", "rdtscp (rdtsc+rdpid)" },
 #endif
 #ifdef __RDPID__
-    { subr_rdpid,                      NULL, 0, "rdpid",         "getcpu" },
+    { subr_rdpid,                      NULL, 0, 0, "cpu-rdpid",  "getcpu" },
 #endif
 #if __amd64__
-    { subr_cpuid,                      NULL, 0, "cpuid",         "cpuid (serialization)" },
-    { subr_lsl,                        NULL, 0, "lsl",           "getcpu" },
+    { subr_cpuid,                      NULL, 0, 0, "cpu-cpuid",  "(serialization)" },
+    { subr_lsl,                        NULL, 0, 0, "cpu-lsl",    "getcpu" },
 #endif
 #if __linux__
-    { subr_sched_getcpu,               NULL, 0, "sched_getcpu",  "getcpu" },
+    { subr_sched_getcpu,               NULL, 0, 0, "sys-sched-getcpu",   "getcpu" },
 #endif
-    { subr_clock,                      NULL, 0, "clock_gettime", "monotonic" },
-    { subr_ticket,                     NULL, 1, "ticket",        "lock+inc+unlock" },
-    { subr_spin,                       NULL, 1, "spin-cmpxchg",  "lock+inc+unlock" },
-    { subr_ptspin,         subr_ptspin_init, 1, "spin-pthread",  "lock+inc+unlock" },
-    { subr_mutex,           subr_mutex_init, 1, "mutex-pthread", "lock+inc+unlock" },
-    { subr_sem,               subr_sem_init, 1, "semaphore",     "wait+inc+post" },
-    { subr_slstack,       subr_slstack_init, 1, "slstack",       "pop+inc+push (spinlock)" },
-    { subr_lfstack,       subr_lfstack_init, 1, "lfstack",       "pop+inc+push (lockfree)" },
+    { subr_clock,                      NULL, 0, 0, "sys-clock-gettime",  "monotonic" },
+    { subr_ticket,                     NULL, 1, 0, "lock-spin-ticket",   "lock+inc+unlock" },
+    { subr_spin,                       NULL, 1, 0, "lock-spin-cmpxchg",  "lock+inc+unlock" },
+    { subr_ptspin,         subr_ptspin_init, 1, 0, "lock-spin-pthread",  "lock+inc+unlock" },
+    { subr_mutex,           subr_mutex_init, 1, 0, "lock-mutex-pthread", "lock+inc+unlock" },
+    { subr_sem,               subr_sem_init, 1, 0, "lock-semaphore",     "wait+inc+post" },
+    { subr_slstack,       subr_slstack_init, 1, 0, "stack-sl", "pop+inc+push (spinlock)" },
+    { subr_lfstack,       subr_lfstack_init, 1, 0, "stack-lf", "pop+inc+push (lockfree)" },
     { NULL }
 };
 
@@ -276,15 +281,7 @@ test_main(void *arg)
         args->calls = i;
     }
 
-    assert((aux & 0xfff) == args->cpu);
-
     pthread_exit(NULL);
-}
-
-static bool
-given(int c)
-{
-    return !!clp_given(c, optionv, NULL);
 }
 
 int
@@ -309,29 +306,27 @@ main(int argc, char **argv)
     if (rc)
         return rc;
 
-    if (given('h') || given('V'))
+    if (clp_given('h', optionv, NULL) || clp_given('V', optionv, NULL))
         return 0;
 
-    /* Try to run the leader thread on any CPU not given on the command line.
+    /* If user specified a list of tests to run then mark each test
+     * that matches the given list (left-anchored partial match).
      */
-    rc = pthread_getaffinity_np(pthread_self(), sizeof(omask), &omask);
-    if (rc) {
-        eprint(0, "unable to get cpu affinity");
-    } else {
-        for (int i = 0; i < posparamv->argc; ++i) {
-            int cpu = atoi(posparamv->argv[i]);
+    if (teststr) {
+        char *str = teststr, *tok;
 
-            CPU_CLR(cpu, &omask);
-        }
+        while (( tok = strsep(&str, ",:;\t ") )) {
+            size_t toklen = strlen(tok);
 
-        rc = pthread_setaffinity_np(pthread_self(), sizeof(omask), &omask);
-        if (rc) {
-            eprint(0, "unable to set leader cpu affinity");
+            for (test = testv; test->name; ++test) {
+                if (!test->matched)
+                    test->matched = !strncmp(test->name, tok, toklen);
+            }
         }
     }
 
 #if USE_CLOCK
-    tsc_freq = 1000000000; /* using clock_gettime() */
+    tsc_freq = 1000000000; /* using clock_gettime() for interval measurements */
 
 #elif HAVE_RDTSC
 
@@ -382,6 +377,7 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
+    cyc_baseline = 0;
     calls_width = 0;
     name_width = 8;
 
@@ -392,16 +388,35 @@ main(int argc, char **argv)
             name_width = w;
     }
 
-    cyc_baseline = 0;
-
     if (setpriority(PRIO_PROCESS, 0, -20) && verbosity > 0)
         eprint(0, "run as root to reduce jitter");
+
+    /* Try to run the leader thread on any CPU not given on the command line.
+     */
+    rc = pthread_getaffinity_np(pthread_self(), sizeof(omask), &omask);
+    if (rc) {
+        eprint(0, "unable to get cpu affinity");
+    } else {
+        for (int i = 0; i < posparamv->argc; ++i) {
+            int cpu = atoi(posparamv->argv[i]);
+
+            CPU_CLR(cpu, &omask);
+        }
+
+        rc = pthread_setaffinity_np(pthread_self(), sizeof(omask), &omask);
+        if (rc) {
+            eprint(0, "unable to set leader cpu affinity");
+        }
+    }
 
     for (test = testv; test->name; ++test) {
         double cptavgtot, cptmintot, cptavg, cptmin;
         uint64_t cyc_start, calls_total;
         double cyclestot;
         char *suspicious;
+
+        if (teststr && !test->matched)
+            continue;
 
         memset(tdargsv, 0, tdargsvsz);
         cyc_start = itv_cycles() + tsc_freq;
@@ -532,6 +547,7 @@ main(int argc, char **argv)
             cyc_baseline = cptmin;
     }
 
+    free(teststr);
     free(tdargsv);
 
     return 0;
