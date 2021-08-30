@@ -64,8 +64,8 @@ typedef cpu_set_t cpuset_t;
 #define USE_CLOCK           (!HAVE_RDTSC)
 #endif
 
-bool headers, shared, unserialized;
 char version[] = PROG_VERSION;
+bool headers, shared;
 uint64_t tsc_freq;
 time_t duration;
 char *progname;
@@ -73,7 +73,8 @@ char *teststr;
 int verbosity;
 int left;
 
-volatile bool testrunning;
+volatile bool testrunning0;
+volatile bool testrunning1;
 
 struct clp_posparam posparamv[] = {
     CLP_POSPARAM("cpuid...", int, left, NULL, NULL, "one or more CPU IDs"),
@@ -81,14 +82,13 @@ struct clp_posparam posparamv[] = {
 };
 
 struct clp_option optionv[] = {
-    CLP_OPTION('d',   time_t,      duration, NULL, "specify max duration (seconds)"),
-    CLP_OPTION('H',     bool,       headers, NULL, "suppress headers"),
+    CLP_OPTION('d',   time_t,  duration, NULL, "specify max per-test duration (seconds)"),
+    CLP_OPTION('H',     bool,   headers, NULL, "suppress headers"),
 #if !USE_CLOCK
-    CLP_OPTION('f', uint64_t,      tsc_freq, NULL, "specify TSC frequency"),
+    CLP_OPTION('f', uint64_t,  tsc_freq, NULL, "specify TSC frequency"),
 #endif
-    CLP_OPTION('s',     bool,        shared, NULL, "let threads share data if applicable"),
-    CLP_OPTION('t',   string,       teststr, NULL, "specify tests to run"),
-    CLP_OPTION('u',     bool,  unserialized, NULL, "do not serialize test function calls"),
+    CLP_OPTION('s',     bool,    shared, NULL, "run shared tests"),
+    CLP_OPTION('t',   string,   teststr, NULL, "specify tests to run"),
     CLP_OPTION_VERBOSITY(verbosity),
     CLP_OPTION_VERSION(version),
     CLP_OPTION_HELP,
@@ -103,24 +103,28 @@ struct test {
     const char *desc;
 };
 
+struct stats {
+    uint64_t    start;
+    uint64_t    stop;
+    double      latmin;
+    double      latavg;
+    uint64_t    calls;
+};
+
 struct tdargs {
     struct testdata *data;
     pthread_t        tid;
     int              cpu;
     struct test     *test;
-    uint64_t         cyc_start;
-    uint64_t         cyc_stop;
-    double           latmin;
-    double           latavg;
-    uint64_t         calls;
+    struct stats     stats[2];
 
     struct testdata testdata __aligned(128);
 };
 
 struct test testv[] = {
-    { subr_baseline,      0, 1, "baseline",            "baseline" },
+    { subr_baseline,      1, 1, "baseline",            "baseline" },
     { subr_inc_tls,       0, 0, "inc-tls",             "inc tls var" },
-    { subr_inc_atomic,    0, 0, "inc-atomic",          "inc atomic (relaxed)" },
+    { subr_inc_atomic,    1, 0, "inc-atomic",          "inc atomic (relaxed)" },
     { subr_xoroshiro,     0, 0, "prng-xoroshiro",      "128-bit prng" },
     { subr_mod128,        0, 0, "prng-mod128",         "xoroshiro % 128" },
     { subr_mod127,        0, 0, "prng-mod127",         "xoroshiro % 127" },
@@ -142,7 +146,7 @@ struct test testv[] = {
 #if __amd64__
     { subr_lsl,           0, 0, "cpu-lsl",             "rdpid" },
 
-    { subr_cpuid,         0, 0, "cpu-cpuid",           "serialize instr execution" },
+    { subr_cpuid,         0, 0, "cpu-cpuid",           "serialize execution" },
     { subr_lfence,        0, 0, "cpu-lfence",          "serialize mem loads" },
     { subr_sfence,        0, 0, "cpu-sfence",          "serialize mem stores" },
     { subr_mfence,        0, 0, "cpu-mfence",          "serialize mem loads+stores" },
@@ -221,6 +225,7 @@ test_main(void *arg)
     struct tdargs *args = arg;
     double latmin, latavg;
     struct testdata *data;
+    struct stats *stats;
     struct test *test;
     subr_func *func;
     u_long iters;
@@ -242,6 +247,7 @@ test_main(void *arg)
     test = args->test;
     func = test->func;
     data = args->data;
+    stats = args->stats;
 
     latmin = DBL_MAX;
     latavg = 0;
@@ -249,51 +255,60 @@ test_main(void *arg)
 
     /* Spin here to synchronize with all threads and maybe kick in turbo boost...
      */
-    while (itv_cycles() < args->cyc_start)
+    while (itv_cycles() < stats->start)
         cpu_pause();
 
-    if ((shared && test->shared) || unserialized) {
-        args->cyc_start = itv_start();
+    stats->start = itv_start();
 
-        while (testrunning) {
-            func(data);
-            func(data);
-            func(data);
-            func(data);
-            ++iters;
-        }
+    while (testrunning0) {
+        uint64_t start, stop;
 
-        args->cyc_stop = itv_stop();
+        start = itv_start();
 
-        args->latavg = (args->cyc_stop - args->cyc_start) / (iters * 4.0);
-        args->latmin = args->latavg;
-        args->calls = iters * 4;
+        func(data);
+
+        stop = itv_stop();
+
+        latavg += stop - start;
+        if (stop - start < latmin)
+            latmin = stop - start;
+
+        ++iters;
     }
-    else {
-        args->cyc_start = itv_start();
 
-        while (testrunning) {
-            uint64_t start, stop;
+    stats->stop = itv_stop();
 
-            start = itv_start();
+    stats->latavg = latavg / iters;
+    stats->latmin = latmin;
+    stats->calls = iters;
 
-            func(data);
 
-            stop = itv_stop();
+    latmin = DBL_MAX;
+    latavg = 0;
+    iters = 0;
 
-            latavg += stop - start;
-            if (stop - start < latmin)
-                latmin = stop - start;
+    ++stats;
 
-            ++iters;
-        }
+    /* Spin here to synchronize with all threads and maybe kick in turbo boost...
+     */
+    while (itv_cycles() < stats->start)
+        cpu_pause();
 
-        args->cyc_stop = itv_stop();
+    stats->start = itv_start();
 
-        args->latavg = latavg / iters;
-        args->latmin = latmin;
-        args->calls = iters;
+    while (testrunning1) {
+        func(data);
+        func(data);
+        func(data);
+        func(data);
+        ++iters;
     }
+
+    stats->stop = itv_stop();
+
+    stats->latavg = (stats->stop - stats->start) / (iters * 4.0);
+    stats->latmin = stats->latavg;
+    stats->calls = iters * 4;
 
     pthread_exit(NULL);
 }
@@ -313,8 +328,8 @@ main(int argc, char **argv)
     progname = strrchr(argv[0], '/');
     progname = progname ? progname + 1 : argv[0];
 
-    duration = 10;
     headers = true;
+    duration = 10;
 
     rc = clp_parsev(argc, argv, optionv, posparamv);
     if (rc)
@@ -391,6 +406,8 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
+    if (duration < 1)
+        duration = 1;
     cyc_baseline = 0;
     calls_width = 0;
     name_width = 8;
@@ -435,12 +452,16 @@ main(int argc, char **argv)
         double cyclestot;
         char *suspicious;
 
+        if (shared && !test->shared)
+            continue;
+
         if (teststr && !test->matched)
             continue;
 
         memset(tdargsv, 0, tdargsvsz);
         cyc_start = itv_cycles() + tsc_freq;
-        testrunning = true;
+        testrunning0 = true;
+        testrunning1 = true;
 
         /* Start one test thread for each cpu given on the command line.
          */
@@ -448,8 +469,8 @@ main(int argc, char **argv)
             struct tdargs *args = tdargsv + i;
 
             args->cpu = atoi(posparamv->argv[i]);
-            args->cyc_start = cyc_start;
-            args->cyc_stop = cyc_start + duration * tsc_freq;
+            args->stats[0].start = cyc_start;
+            args->stats[1].start = cyc_start + (duration / 2.0) + tsc_freq;
             args->test = test;
             args->data = &args->testdata;
             atomic_store(&args->data->refcnt, 0);
@@ -473,11 +494,15 @@ main(int argc, char **argv)
         cyclestot = 0;
         calls_total = 0;
 
+        sleep((duration / 2.0) + 1);
+        testrunning0 = false;
+
         sleep(duration + 1);
-        testrunning = false;
+        testrunning1 = false;
 
         for (int i = 0; i < posparamv->argc; ++i) {
             struct tdargs *args = tdargsv + i;
+            struct stats *stats = args->stats;
             double cycles;
             void *res;
 
@@ -489,15 +514,15 @@ main(int argc, char **argv)
 
             subr_fini(args->data, test->func);
 
-            cycles = args->cyc_stop - args->cyc_start;
+            cycles = stats[1].stop - stats[1].start;
             cyclestot += cycles;
 
-            cptavg = args->latavg;
+            cptavg = stats[1].latavg;
             if (cptavg > cyc_baseline)
                 cptavg -= cyc_baseline;
             cptavgtot += cptavg;
 
-            cptmin = args->latmin;
+            cptmin = stats[0].latmin;
             if (cptmin > cyc_baseline) {
                 cptmin -= cyc_baseline;
                 suspicious = " ";
@@ -507,37 +532,40 @@ main(int argc, char **argv)
             if (cptmin < cptmintot)
                 cptmintot = cptmin;
 
-            calls_total += args->calls;
+            calls_total += stats[1].calls;
 
-            if (!calls_width)
-                calls_width = snprintf(NULL, 0, " %4lu", args->calls * posparamv->argc);
+            if (!calls_width) {
+                calls_width = snprintf(NULL, 0, " %6.2lf",
+                                       (stats[1].calls * posparamv->argc) / 1000000.0);
+            }
 
             if (headers) {
-                printf("\n%3s %5s %8s %*s %10s %7s %10s %7s  %7s\n",
-                       "", "MHz", "seconds", calls_width, "tot",
-                       "avg", "avg", "max", "min", "min");
+                printf("\n%3s %5s %*s %9s %7s %7s   %7s %7s\n",
+                       "", "MHz", calls_width, "tot",
+                       "avg", "avg", "avg", "sermin", "sermin");
 
-                printf("%3s %5s %8s %*s %10s %7s %10s %7s  %7s  %-*s  %s\n",
+                printf("%3s %5s %*s %9s %7s %7s   %7s %7s  %-*s  %s\n",
                        (verbosity > 0) ? "CPU" : "-",
                        (USE_CLOCK) ? "CLK" : "TSC",
-                       "ELAPSED",
-                       calls_width, "CALLS",
-                       "MCALLS/S", (USE_CLOCK) ? "NSECS" : "CYCLES",
-                       "MCALLS/S", (USE_CLOCK) ? "NSECS" : "CYCLES",
+                       calls_width, "MCALLS",
+                       "MCALLS/s",
+                       (USE_CLOCK) ? "NSECS" : "CYCLES",
                        "NSECS",
-                       name_width, "TEST", "DESC");
+                       (USE_CLOCK) ? "NSECS" : "CYCLES",
+                       "NSECS",
+                       name_width, "NAME", "DESC");
 
                 headers = false;
             }
 
             if (verbosity > 0) {
-                printf("%3d %5lu %8.3lf %*lu %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
-                       args->cpu, tsc_freq / 1000000,
-                       cycles / tsc_freq,
-                       calls_width, args->calls,
+                printf("%3d %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf%s %7.2lf  %-*s  %s\n",
+                       args->cpu,
+                       tsc_freq / 1000000,
+                       calls_width, (stats[1].calls / 1000000.0),
                        tsc_freq / (cptavg * 1000000),
                        cptavg,
-                       tsc_freq / (cptmin * 1000000),
+                       (cptavg * 1000000000.0) / tsc_freq,
                        cptmin,
                        suspicious,
                        (cptmin * 1000000000.0) / tsc_freq,
@@ -547,22 +575,15 @@ main(int argc, char **argv)
 
         cptavg = cptavgtot / posparamv->argc;
         cptmin = cptmintot;
-        if (cptmin > cptavg) {
-            cptmin = cptavg;
-            suspicious = "*";
-        } else {
-            suspicious = " ";
-        }
 
-        printf("%3s %5lu %8.3lf %*lu %10.2lf %7.1lf %10.2lf %7.1lf%s %7.2lf  %-*s  %s\n",
-               "-", tsc_freq / 1000000,
-               (cyclestot / tsc_freq) / posparamv->argc,
-               calls_width, calls_total,
+        printf("%3s %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf %7.2lf  %-*s  %s\n",
+               "-",
+               tsc_freq / 1000000,
+               calls_width, (calls_total / 1000000.0),
                tsc_freq / (cptavg * 1000000),
                cptavg,
-               tsc_freq / (cptmin * 1000000),
+               (cptavg * 1000000000.0) / tsc_freq,
                cptmin,
-               suspicious,
                (cptmin * 1000000000.0) / tsc_freq,
                name_width, test->name, test->desc);
         fflush(stdout);
