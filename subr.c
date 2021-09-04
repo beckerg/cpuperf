@@ -123,7 +123,7 @@ subr_rdrand64(struct testdata *data __unused)
 uintptr_t
 subr_rdpid(struct testdata *data __unused)
 {
-    return _rdpid_u32();
+    return _rdpid_u32() & 0xfff;
 }
 #endif
 

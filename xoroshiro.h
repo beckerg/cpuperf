@@ -26,8 +26,8 @@ xoroshiro128plus(uint64_t *s)
     const uint64_t result = s0 + s1;
 
     s1 ^= s0;
-    s[0] = rotl(s0, 55) ^ s1 ^ (s1 << 14); // a, b
-    s[1] = rotl(s1, 36); // c
+    s[0] = rotl(s0, 24) ^ s1 ^ (s1 << 16); // a, b
+    s[1] = rotl(s1, 37); // c
 
     return result;
 }
