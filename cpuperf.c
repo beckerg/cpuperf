@@ -255,8 +255,11 @@ test_main(void *arg)
 
     /* Spin here to synchronize with all threads and maybe kick in turbo boost...
      */
-    while (itv_cycles() < stats->start)
-        cpu_pause();
+    while (itv_cycles() < stats->start) {
+        if (itv_cycles() % 8 == 0) {
+            cpu_pause();
+        }
+    }
 
     stats->start = itv_start();
 
