@@ -36,8 +36,10 @@
 #include <sys/resource.h>
 #include <pthread.h>
 
+#if __has_include(<immintrin.h>)
 #include <immintrin.h>
 #include <x86intrin.h>
+#endif
 
 #if __FreeBSD__
 #include <pthread_np.h>

@@ -24,6 +24,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdatomic.h>
 #include <unistd.h>
 #include <errno.h>
@@ -32,8 +33,10 @@
 #include <semaphore.h>
 #include <pthread.h>
 
+#if __has_include(<immintrin.h>)
 #include <immintrin.h>
 #include <x86intrin.h>
+#endif
 
 #if __linux__
 #include <sched.h>
