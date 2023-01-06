@@ -10,7 +10,7 @@ and either running it as root or running it under nice to give it maximum schedu
 priority.
 
 ## Build
-Simply type ``` gmake ``` to build the tool:
+Simply type **gmake** to build the tool:
 
 ```
 $ gmake
@@ -53,18 +53,19 @@ $ sudo ./cpuperf -t lock-mutex  2 4
 ```
 
 We see that **cpuperf** first performs a baseline measurement, which is simply a call to
-a function that accepts a single pointer and returns zero.  According to the **sermin**
-columns it takes 24 cycles to call this function and wait for completion.  However, it
-appears that if we do not serialize the call nor wait for completion we can call this
-function an average of 716.99 million times per second per vCPU (roughly five times
-more often, likely due to the processor's ability to schedule overlapping calls).
+a function that accepts a single pointer to some per-thread data and returns zero.
+According to the **sermin** columns it takes 24 cycles to call this function and wait for
+completion.  However, according to the **avg** columns, it appears that if we do not serialize
+the call nor wait for completion we can call this function an average of 716.99 million
+times per second per vCPU (roughly five times more often, likely due to the processor's
+ability to schedule overlapping instructions).
 Similary, we see that the cost of calling lock+inc+unlock on an uncontended mutex
 is about 87 cycles, and we can do that about 44.24 million times per second.
-It's not obvious, but the **sermin** result of the "lock-mutex-pthread" test have
+It's not obvious, but the **sermin** result of the **lock-mutex-pthread** test have
 had the baseline measurement subtracted from it.  More on this later...
 
-Next, we run **cpuperf** again with the _**-s**_ option which tells _**cpuperf**_ to use
-shared locks amongst all test threads:
+Next, we run **cpuperf** again, this time with the _**-s**_ option which tells _**cpuperf**_
+to use shared locks amongst all test threads:
 
 ```
 $ sudo ./cpuperf -t lock-mutex -s  2 4
@@ -76,11 +77,12 @@ $ sudo ./cpuperf -t lock-mutex -s  2 4
 
 ```
 
-Here again we see that **sermin** results for the shared "lock-mutex-pthread" test are the
+Here again we see that the **sermin** results for the shared **lock-mutex-pthread** test are the
 same as for the non-shared tests, indicating that the overhead of the serialization diminishes
-the contention on the lock such that it's not a factor.
-That said, the results for the **avg** MCALLS/s show that extreme contention by only two
-threads on two different cores reduces the throughput to .041 of the uncontended lock.
+the contention to such a degree that it's not a factor.
+On the other hand, the results for the **avg** MCALLS/s show that extreme contention by only two
+threads on two different cores reduces the throughput to .041 of the uncontended lock.  Keep in
+mind, these threads are doing nothing other than hammer on the lock.
 
 Now let's run the same contended test on two threads running on the same core:
 

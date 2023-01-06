@@ -454,7 +454,7 @@ main(int argc, char **argv)
     for (test = testv; test->name; ++test) {
         double cptavgtot, cptmintot, cptavg, cptmin;
         uint64_t cyc_start, calls_total;
-        double cyclestot;
+        //double cyclestot;
         char *suspicious;
 
         if (shared && !test->shared)
@@ -496,7 +496,7 @@ main(int argc, char **argv)
         cptavgtot = cptavg = 0;
         cptmintot = DBL_MAX;
         cptmin = DBL_MAX;
-        cyclestot = 0;
+        //cyclestot = 0;
         calls_total = 0;
 
         sleep((duration / 2.0) + 1);
@@ -520,7 +520,7 @@ main(int argc, char **argv)
             subr_fini(args->data, test->func);
 
             cycles = stats[1].stop - stats[1].start;
-            cyclestot += cycles;
+            //cyclestot += cycles;
 
             cptavg = stats[1].latavg;
             if (cptavg > cyc_baseline)
