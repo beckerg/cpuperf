@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Greg Becker.  All rights reserved.
+ * Copyright (c) 2021,2023 Greg Becker.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,6 +30,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <float.h>
+#include <ctype.h>
 #include <sysexits.h>
 #include <sys/time.h>
 #include <sys/param.h>
@@ -67,7 +68,7 @@ typedef cpu_set_t cpuset_t;
 #endif
 
 char version[] = PROG_VERSION;
-bool headers, shared;
+bool headers, shared, testlist;
 uint64_t tsc_freq;
 time_t duration;
 char *progname;
@@ -79,18 +80,22 @@ volatile bool testrunning0;
 volatile bool testrunning1;
 
 struct clp_posparam posparamv[] = {
-    CLP_POSPARAM("cpuid...", int, left, NULL, NULL, "one or more CPU IDs"),
+    CLP_POSPARAM("cpuid...", string, left, NULL, NULL, "one or more CPU IDs"),
     CLP_POSPARAM_END
 };
 
 struct clp_option optionv[] = {
     CLP_OPTION('d',   time_t,  duration, NULL, "specify max per-test duration (seconds)"),
-    CLP_OPTION('H',     bool,   headers, NULL, "suppress headers"),
 #if !USE_CLOCK
     CLP_OPTION('f', uint64_t,  tsc_freq, NULL, "specify TSC frequency"),
 #endif
+    CLP_OPTION('H',     bool,   headers, NULL, "suppress headers"),
     CLP_OPTION('s',     bool,    shared, NULL, "run shared tests"),
     CLP_OPTION('t',   string,   teststr, NULL, "specify tests to run"),
+
+    CLP_XOPTION('l',    bool,  testlist, NULL, "list tests",
+                "testlist", NULL, NULL, clp_posparam_none),
+
     CLP_OPTION_VERBOSITY(verbosity),
     CLP_OPTION_VERSION(version),
     CLP_OPTION_HELP,
@@ -116,7 +121,7 @@ struct stats {
 struct tdargs {
     struct testdata *data;
     pthread_t        tid;
-    int              cpu;
+    size_t           cpu;
     struct test     *test;
     struct stats     stats[2];
 
@@ -124,44 +129,45 @@ struct tdargs {
 };
 
 struct test testv[] = {
-    { subr_baseline,      1, 1, "baseline",            "baseline" },
-    { subr_inc_tls,       0, 0, "inc-tls",             "inc tls var" },
-    { subr_inc_atomic,    1, 0, "inc-atomic",          "inc atomic (relaxed)" },
-    { subr_xoroshiro,     0, 0, "prng-xoroshiro",      "128-bit prng" },
-    { subr_mod128,        0, 0, "prng-mod128",         "xoroshiro % 128" },
-    { subr_mod127,        0, 0, "prng-mod127",         "xoroshiro % 127" },
+    { subr_baseline,        1, 1, "baseline",            "baseline" },
+    { subr_inc_tls,         0, 0, "inc-tls",             "inc tls var" },
+    { subr_inc_atomic,      1, 0, "inc-atomic",          "inc atomic (relaxed)" },
+    { subr_inc_atomic_cst,  1, 0, "inc-atomic-cst",      "inc atomic (seq cst)" },
+    { subr_xoroshiro,       0, 0, "prng-xoroshiro",      "128-bit prng" },
+    { subr_mod128,          0, 0, "prng-mod128",         "xoroshiro % 128" },
+    { subr_mod127,          0, 0, "prng-mod127",         "xoroshiro % 127" },
 #if HAVE_RDRAND64
-    { subr_rdrand64,      0, 0, "cpu-rdrand64",        "64-bit prng" },
+    { subr_rdrand64,        0, 0, "cpu-rdrand64",        "64-bit prng" },
 #endif
 #if HAVE_RDTSC
-    { subr_rdtsc,         0, 0, "cpu-rdtsc",           "rdtsc" },
+    { subr_rdtsc,           0, 0, "cpu-rdtsc",           "rdtsc" },
 #endif
 #if HAVE_RDTSCP
-    { subr_rdtscp,        0, 0, "cpu-rdtscp",          "rdtsc+rdpid" },
+    { subr_rdtscp,          0, 0, "cpu-rdtscp",          "rdtsc+rdpid" },
 #endif
 #ifdef __RDPID__
-    { subr_rdpid,         0, 0, "cpu-rdpid",           "rdpid" },
+    { subr_rdpid,           0, 0, "cpu-rdpid",           "rdpid" },
 #endif
 #if __linux__
-    { subr_sched_getcpu,  0, 0, "sys-sched-getcpu",    "rdpid" },
+    { subr_sched_getcpu,    0, 0, "sys-sched-getcpu",    "rdpid" },
 #endif
 #if __amd64__
-    { subr_lsl,           0, 0, "cpu-lsl",             "rdpid" },
+    { subr_lsl,             0, 0, "cpu-lsl",             "rdpid" },
 
-    { subr_cpuid,         0, 0, "cpu-cpuid",           "serialize execution" },
-    { subr_lfence,        0, 0, "cpu-lfence",          "serialize mem loads" },
-    { subr_sfence,        0, 0, "cpu-sfence",          "serialize mem stores" },
-    { subr_mfence,        0, 0, "cpu-mfence",          "serialize mem loads+stores" },
-    { subr_pause,         0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
+    { subr_cpuid,           0, 0, "cpu-cpuid",           "serialize execution" },
+    { subr_lfence,          0, 0, "cpu-lfence",          "serialize mem loads" },
+    { subr_sfence,          0, 0, "cpu-sfence",          "serialize mem stores" },
+    { subr_mfence,          0, 0, "cpu-mfence",          "serialize mem loads+stores" },
+    { subr_pause,           0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
 #endif
-    { subr_clock,         0, 0, "sys-clock-gettime",   "monotonic" },
-    { subr_ticket,        1, 0, "lock-ticket",         "lock+inc+unlock" },
-    { subr_spin,          1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
-    { subr_ptspin,        1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
-    { subr_mutex,         1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
-    { subr_sema,          1, 0, "lock-semaphore",      "wait+inc+post (uncontended)" },
-    { subr_slstack,       1, 0, "stack-spinlock",      "pop+inc+push" },
-    { subr_lfstack,       1, 0, "stack-lockfree",      "pop+inc+push" },
+    { subr_clock,           0, 0, "sys-clock-gettime",   "monotonic" },
+    { subr_ticket,          1, 0, "lock-ticket",         "lock+inc+unlock" },
+    { subr_spin,            1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
+    { subr_ptspin,          1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
+    { subr_mutex,           1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
+    { subr_sema,            1, 0, "lock-semaphore",      "wait+inc+post (uncontended)" },
+    { subr_slstack,         1, 0, "stack-spinlock",      "pop+inc+push" },
+    { subr_lfstack,         1, 0, "stack-lockfree",      "pop+inc+push" },
     { NULL, 0, 0, NULL, NULL }
 };
 
@@ -179,6 +185,66 @@ eprint(int xerrno, const char *fmt, ...)
             progname, msg,
             xerrno ? ": " : "",
             xerrno ? strerror(xerrno) : "");
+}
+
+static void
+cpuset_print(const char *msg, cpuset_t *mask)
+{
+    printf("%s: ", msg);
+
+    for (size_t i = 0; i < CPU_SETSIZE; ++i) {
+        if (CPU_ISSET(i, mask))
+            printf(" %zu", i);
+    }
+    printf("\n");
+}
+
+static void
+range_decode(const char *str, cpuset_t *mask)
+{
+    unsigned long left, right;
+    char *end;
+
+    while (str) {
+        while (isspace(*str) || *str == ',')
+            ++str;
+
+        if (!*str)
+            break;
+
+        errno = 0;
+        left = strtoul(str, &end, 10);
+        if (errno || end == str || left >= CPU_SETSIZE) {
+            eprint(errno, "unable to convert [%s] to a cpu mask", str);
+            exit(EX_USAGE);
+        }
+
+        while (isspace(*end))
+            ++end;
+
+        right = left;
+
+        if (*end == '-') {
+            errno = 0;
+            right = strtoul(end + 1, &end, 10);
+            if (errno || end == str || right >= CPU_SETSIZE) {
+                eprint(errno, "unable to convert [%s] to a cpu mask", str);
+                exit(EX_USAGE);
+            }
+
+            if (right < left) {
+                eprint(errno, "invalid range [%s]", str);
+                exit(EX_USAGE);
+            }
+        }
+
+        while (left <= right) {
+            CPU_SET(left, mask);
+            left++;
+        }
+
+        str = end;
+    }
 }
 
 
@@ -241,7 +307,7 @@ test_main(void *arg)
 
         rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
         if (rc) {
-            eprint(EINVAL, "unable to set cpu affinity to CPU %d", args->cpu);
+            eprint(EINVAL, "unable to set cpu affinity to CPU %zu", args->cpu);
             pthread_exit(NULL);
         }
     }
@@ -321,11 +387,11 @@ test_main(void *arg)
 int
 main(int argc, char **argv)
 {
+    cpuset_t avail_mask, test_mask, mask;
     struct tdargs *tdargsv;
     double cyc_baseline;
     struct test *test;
     size_t tdargsvsz;
-    cpuset_t omask;
     int calls_width;
     int name_width;
     int rc;
@@ -335,6 +401,7 @@ main(int argc, char **argv)
 
     headers = true;
     duration = 10;
+    name_width = 8;
 
     rc = clp_parsev(argc, argv, optionv, posparamv);
     if (rc)
@@ -344,20 +411,86 @@ main(int argc, char **argv)
         return 0;
 
     /* If user specified a list of tests to run then mark each test
-     * that matches the given list (left-anchored partial match).
+     * whose name partially matches the given list.
      */
     if (teststr) {
         char *str = teststr, *tok;
 
         while (( tok = strsep(&str, ",:;\t ") )) {
-            size_t toklen = strlen(tok);
-
             for (test = testv; test->name; ++test) {
-                if (!test->matched)
-                    test->matched = !strncmp(test->name, tok, toklen);
+                if (!test->matched) {
+                    if (shared && !test->shared)
+                        continue;
+
+                    test->matched = strstr(test->name, tok);
+                }
             }
         }
     }
+    else {
+        for (test = testv; test->name; ++test)
+            test->matched = shared ? test->shared : true;
+    }
+
+    /* Find the max name width of all tests we are going to run.
+     */
+    for (test = testv; test->name; ++test) {
+        if (test->matched) {
+            int w = strlen(test->name);
+
+            if (w > name_width)
+                name_width = w;
+        }
+    }
+
+    if (clp_given('l', optionv, NULL)) {
+        printf("%-*s  %s\n", name_width, "NAME", "DESC");
+
+        for (test = testv; test->name; ++test) {
+            if (test->matched)
+                printf("%-*s  %s\n", name_width, test->name, test->desc);
+        }
+
+        return 0;
+    }
+
+    rc = pthread_getaffinity_np(pthread_self(), sizeof(avail_mask), &avail_mask);
+    if (rc) {
+        eprint(rc, "unable to get cpu affinity");
+        exit(EX_OSERR);
+    }
+
+    /* Build a mask of CPUs to test.  Each positional parameter may be either
+     * a single CPU ID or a range separated by a single dash character.
+     */
+    CPU_ZERO(&mask);
+    for (int i = 0; i < posparamv->argc; ++i)
+        range_decode(posparamv->argv[i], &mask);
+
+    CPU_AND(&test_mask, &avail_mask, &mask);
+
+    if (CPU_COUNT(&test_mask) < 1) {
+        eprint(EINVAL, "at least one cpu ID must be specified");
+        exit(EX_USAGE);
+    }
+
+    if (verbosity > 0 || CPU_COUNT(&test_mask) < CPU_COUNT(&mask))
+        cpuset_print("testing cpus", &test_mask);
+
+    /* Try to run the leader thread on any CPU not given on the command line.
+     */
+    CPU_XOR(&mask, &avail_mask, &test_mask);
+
+    if (CPU_COUNT(&mask) > 0) {
+        rc = pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
+        if (rc) {
+            eprint(rc, "unable to set leader cpu affinity");
+        }
+    }
+
+    if (verbosity > 0)
+        cpuset_print("leader cpus", &mask);
+
 
 #if USE_CLOCK
     tsc_freq = 1000000000; /* using clock_gettime() for interval measurements */
@@ -415,52 +548,18 @@ main(int argc, char **argv)
         duration = 1;
     cyc_baseline = 0;
     calls_width = 0;
-    name_width = 8;
-
-    for (test = testv; test->name; ++test) {
-        int w = strlen(test->name);
-
-        if (teststr && !test->matched)
-            continue;
-
-        if (w > name_width)
-            name_width = w;
-    }
 
     if (setpriority(PRIO_PROCESS, 0, -20) && verbosity > 0)
         eprint(0, "run as root to reduce jitter");
 
-    /* Try to run the leader thread on any CPU not given on the command line.
-     */
-    rc = pthread_getaffinity_np(pthread_self(), sizeof(omask), &omask);
-    if (rc) {
-        eprint(rc, "unable to get cpu affinity");
-    } else {
-        for (int i = 0; i < posparamv->argc; ++i) {
-            int cpu = atoi(posparamv->argv[i]);
-
-            if (cpu >= 0)
-                CPU_CLR(cpu, &omask);
-        }
-
-        if (CPU_COUNT(&omask) > 0) {
-            rc = pthread_setaffinity_np(pthread_self(), sizeof(omask), &omask);
-            if (rc) {
-                eprint(rc, "unable to set leader cpu affinity");
-            }
-        }
-    }
-
     for (test = testv; test->name; ++test) {
         double cptavgtot, cptmintot, cptavg, cptmin;
+        struct testdata *shared_data = NULL;
         uint64_t cyc_start, calls_total;
         //double cyclestot;
         char *suspicious;
 
-        if (shared && !test->shared)
-            continue;
-
-        if (teststr && !test->matched)
+        if (!test->matched)
             continue;
 
         memset(tdargsv, 0, tdargsvsz);
@@ -468,27 +567,37 @@ main(int argc, char **argv)
         testrunning0 = true;
         testrunning1 = true;
 
+        if (shared && test->shared && !shared_data) {
+            struct tdargs *args = tdargsv + CPU_FFS(&test_mask);
+
+            shared_data = &args->testdata;
+        }
+
         /* Start one test thread for each cpu given on the command line.
          */
-        for (int i = 0; i < posparamv->argc; ++i) {
+        for (size_t i = 0; i < CPU_SETSIZE; ++i) {
             struct tdargs *args = tdargsv + i;
 
-            args->cpu = atoi(posparamv->argv[i]);
+            if (!CPU_ISSET(i, &test_mask))
+                continue;
+
+            args->cpu = i;
             args->stats[0].start = cyc_start;
             args->stats[1].start = cyc_start + (duration / 2.0) + tsc_freq;
             args->test = test;
+
             args->data = &args->testdata;
             atomic_store(&args->data->refcnt, 0);
-            args->data->cpumax = posparamv->argc;
+            args->data->cpumax = CPU_COUNT(&test_mask);
 
-            if (shared && test->shared)
-                args->data = &tdargsv->testdata;
+            if (shared_data)
+                args->data = shared_data;
 
             subr_init(args->data, test->func);
 
             rc = pthread_create(&args->tid, NULL, test_main, args);
             if (rc) {
-                eprint(rc, "unable to create pthread %d for cpu %d", i, args->cpu);
+                eprint(rc, "unable to create pthread %d for cpu %zu", i, args->cpu);
                 exit(EX_OSERR);
             }
         }
@@ -505,21 +614,24 @@ main(int argc, char **argv)
         sleep(duration + 1);
         testrunning1 = false;
 
-        for (int i = 0; i < posparamv->argc; ++i) {
+        for (size_t i = 0; i < CPU_SETSIZE; ++i) {
             struct tdargs *args = tdargsv + i;
             struct stats *stats = args->stats;
-            double cycles;
+            //double cycles;
             void *res;
+
+            if (!CPU_ISSET(i, &test_mask))
+                continue;
 
             rc = pthread_join(args->tid, &res);
             if (rc) {
-                eprint(rc, "unable to join pthread %d for cpu %d", i, args->cpu);
+                eprint(rc, "unable to join pthread %d for cpu %zu", i, args->cpu);
                 continue;
             }
 
             subr_fini(args->data, test->func);
 
-            cycles = stats[1].stop - stats[1].start;
+            //cycles = stats[1].stop - stats[1].start;
             //cyclestot += cycles;
 
             cptavg = stats[1].latavg;
@@ -541,7 +653,7 @@ main(int argc, char **argv)
 
             if (!calls_width) {
                 calls_width = snprintf(NULL, 0, " %6.2lf",
-                                       (stats[1].calls * posparamv->argc) / 1000000.0);
+                                       (stats[1].calls * CPU_COUNT(&test_mask)) / 1000000.0);
             }
 
             if (headers) {
@@ -564,7 +676,7 @@ main(int argc, char **argv)
             }
 
             if (verbosity > 0) {
-                printf("%3d %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf%s %7.2lf  %-*s  %s\n",
+                printf("%3zu %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf%s %7.2lf  %-*s  %s\n",
                        args->cpu,
                        tsc_freq / 1000000,
                        calls_width, (stats[1].calls / 1000000.0),
@@ -578,7 +690,7 @@ main(int argc, char **argv)
             }
         }
 
-        cptavg = cptavgtot / posparamv->argc;
+        cptavg = cptavgtot / CPU_COUNT(&test_mask);
         cptmin = cptmintot;
 
         printf("%3s %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf %7.2lf  %-*s  %s\n",

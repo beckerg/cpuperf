@@ -93,6 +93,12 @@ subr_inc_atomic(struct testdata *data)
     return atomic_fetch_add_explicit(&data->inc.cnt, 1, memory_order_relaxed);
 }
 
+uintptr_t
+subr_inc_atomic_cst(struct testdata *data)
+{
+    return atomic_fetch_add_explicit(&data->inc.cnt, 1, memory_order_seq_cst);
+}
+
 #if HAVE_RDTSC
 uintptr_t
 subr_rdtsc(struct testdata *data __unused)
@@ -232,7 +238,14 @@ subr_spin_lock(atomic_int *ptr)
 static inline void
 subr_spin_unlock(atomic_int *ptr)
 {
+#if 1
     atomic_store_explicit(ptr, 0, memory_order_release);
+#else
+    int old = 1;
+
+    while (!atomic_cmpxchg_rel(ptr, &old, 0))
+        old = 1;
+#endif
 }
 
 uintptr_t
@@ -429,29 +442,38 @@ subr_slstack(struct testdata *data)
 int
 subr_init(struct testdata *data, subr_func *func)
 {
+    int rc = 0;
+
     if (atomic_inc(&data->refcnt) > 1)
         return 0;
 
     if (func == subr_xoroshiro) {
         xoroshiro128plus_init(data->prng.state, 0);
     }
+    else if (func == subr_ticket) {
+        atomic_store(&data->ticket.head, 0);
+        atomic_store(&data->ticket.tail, 1);
+    }
+    else if (func == subr_spin) {
+        atomic_store(&data->spin.lock, 0);
+    }
     else if (func == subr_ptspin) {
-        return pthread_spin_init(&data->ptspin.lock, 0);
+        rc = pthread_spin_init(&data->ptspin.lock, 0);
     }
     else if (func == subr_mutex) {
-        return pthread_mutex_init(&data->mutex.mtx, NULL);
+        rc =pthread_mutex_init(&data->mutex.mtx, NULL);
     }
     else if (func == subr_sema) {
-        return sem_init(&data->sema.sema, 0, data->cpumax);
+        rc = sem_init(&data->sema.sema, 0, data->cpumax);
     }
     else if (func == subr_lfstack) {
-        return subr_lfstack_init(data);
+        rc = subr_lfstack_init(data);
     }
     else if (func == subr_slstack) {
-        return subr_slstack_init(data);
+        rc = subr_slstack_init(data);
     }
 
-    return 0;
+    return rc;
 }
 
 void

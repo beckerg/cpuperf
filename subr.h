@@ -109,6 +109,7 @@ extern subr_func subr_baseline;
 
 extern subr_func subr_inc_tls;
 extern subr_func subr_inc_atomic;
+extern subr_func subr_inc_atomic_cst;
 
 #if HAVE_RDTSC
 extern subr_func subr_rdtsc;
