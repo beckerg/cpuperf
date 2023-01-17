@@ -51,6 +51,15 @@
 #if __linux__
 #include <sched.h>
 typedef cpu_set_t cpuset_t;
+
+#define CPU_FFS(_cs)                            \
+({                                              \
+    size_t i;                                   \
+    for (i = 0; i < CPU_SETSIZE; ++i)           \
+        if (CPU_ISSET(i, (_cs)))                \
+            break;                              \
+    i;                                          \
+})
 #endif
 
 #ifndef __aligned
@@ -296,20 +305,17 @@ test_main(void *arg)
     struct stats *stats;
     struct test *test;
     subr_func *func;
+    cpuset_t nmask;
     u_long iters;
     int rc;
 
-    if (args->cpu >= 0) {
-        cpuset_t nmask;
+    CPU_ZERO(&nmask);
+    CPU_SET(args->cpu, &nmask);
 
-        CPU_ZERO(&nmask);
-        CPU_SET(args->cpu, &nmask);
-
-        rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
-        if (rc) {
-            eprint(EINVAL, "unable to set cpu affinity to CPU %zu", args->cpu);
-            pthread_exit(NULL);
-        }
+    rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
+    if (rc) {
+        eprint(EINVAL, "unable to affine thread %lu to CPU %zu", args->tid, args->cpu);
+        pthread_exit(NULL);
     }
 
     test = args->test;
