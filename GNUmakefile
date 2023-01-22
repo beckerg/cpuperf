@@ -21,7 +21,7 @@ endif
 .DELETE_ON_ERROR:
 .NOTPARALLEL:
 
-.PHONY:	all asan check clean clobber debug distclean maintainer-clean test
+.PHONY:	all asan check clean clobber debug distclean maintainer-clean
 
 
 all: ${PROG}
