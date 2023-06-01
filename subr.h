@@ -38,9 +38,14 @@ struct prng {
     uint64_t state[2];
 };
 
-struct mutex {
+struct mutex_pthread {
     pthread_mutex_t mtx;
     uint64_t        cnt;
+};
+
+struct mutex_sema {
+    sem_t    sema;
+    uint64_t cnt;
 };
 
 struct ticket {
@@ -49,12 +54,12 @@ struct ticket {
     uint64_t      cnt;
 };
 
-struct spin {
+struct spin_cmpxchg {
     atomic_int lock;
     uint64_t   cnt;
 };
 
-struct ptspin {
+struct spin_pthread {
     pthread_spinlock_t lock;
     uint64_t           cnt;
 };
@@ -64,28 +69,29 @@ struct sema {
     uint64_t cnt;
 };
 
-struct stack_lf {
+struct stack_lockfree {
     struct lfstack *lfstack;
 };
 
-struct stack_sl {
+struct stack_spinlock {
     atomic_int  lock;
     void       *head;
 };
 
 struct testdata {
     union {
-        struct inc      inc;
-        struct clock    clock;
-        struct tsc      tsc;
-        struct prng     prng;
-        struct mutex    mutex;
-        struct ticket   ticket;
-        struct spin     spin;
-        struct ptspin   ptspin;
-        struct sema     sema;
-        struct stack_lf lfstack;
-        struct stack_sl slstack;
+        struct inc              inc;
+        struct clock            clock;
+        struct tsc              tsc;
+        struct prng             prng;
+        struct ticket           ticket;
+        struct spin_cmpxchg     spin_cmpxchg;
+        struct spin_pthread     spin_pthread;
+        struct mutex_pthread    mutex_pthread;
+        struct mutex_sema       mutex_sema;
+        struct sema             sema;
+        struct stack_lockfree   lfstack;
+        struct stack_spinlock   slstack;
     };
 
     atomic_int refcnt;
@@ -147,13 +153,15 @@ extern subr_func subr_mod128;
 extern subr_func subr_clock;
 
 extern subr_func subr_ticket;
-extern subr_func subr_spin;
-extern subr_func subr_ptspin;
-extern subr_func subr_mutex;
+extern subr_func subr_spin_cmpxchg;
+extern subr_func subr_spin_pthread;
+extern subr_func subr_mutex_pthread;
+extern subr_func subr_mutex_sema;
+
 extern subr_func subr_sema;
 
-extern subr_func subr_lfstack;
-extern subr_func subr_slstack;
+extern subr_func subr_stack_lockfree;
+extern subr_func subr_stack_spinlock;
 
 extern int  subr_init(struct testdata *data, subr_func *func);
 extern void subr_fini(struct testdata *data, subr_func *func);

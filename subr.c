@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Greg Becker.  All rights reserved.
+ * Copyright (c) 2021,2023 Greg Becker.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -23,6 +23,7 @@
  * SUCH DAMAGE.
  */
 
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -224,7 +225,7 @@ subr_clock(struct testdata *data)
 }
 
 static inline void
-subr_spin_lock(atomic_int *ptr)
+subr_cmpxchg_lock(atomic_int *ptr)
 {
     int old = 0;
 
@@ -236,7 +237,7 @@ subr_spin_lock(atomic_int *ptr)
 }
 
 static inline void
-subr_spin_unlock(atomic_int *ptr)
+subr_cmpxchg_unlock(atomic_int *ptr)
 {
 #if 1
     atomic_store_explicit(ptr, 0, memory_order_release);
@@ -249,25 +250,46 @@ subr_spin_unlock(atomic_int *ptr)
 }
 
 uintptr_t
-subr_spin(struct testdata *data)
+subr_spin_cmpxchg(struct testdata *data)
 {
-    subr_spin_lock(&data->spin.lock);
-    data->spin.cnt++;
-    subr_spin_unlock(&data->spin.lock);
+    subr_cmpxchg_lock(&data->spin_cmpxchg.lock);
+    data->spin_cmpxchg.cnt++;
+    subr_cmpxchg_unlock(&data->spin_cmpxchg.lock);
 
     return 0;
 }
 
 uintptr_t
-subr_ptspin(struct testdata *data)
+subr_spin_pthread(struct testdata *data)
 {
-    pthread_spin_lock(&data->ptspin.lock);
-    data->ptspin.cnt++;
-    pthread_spin_unlock(&data->ptspin.lock);
+    pthread_spin_lock(&data->spin_pthread.lock);
+    data->spin_pthread.cnt++;
+    pthread_spin_unlock(&data->spin_pthread.lock);
 
     return 0;
 }
 
+uintptr_t
+subr_mutex_pthread(struct testdata *data)
+{
+    pthread_mutex_lock(&data->mutex_pthread.mtx);
+    data->mutex_pthread.cnt++;
+    pthread_mutex_unlock(&data->mutex_pthread.mtx);
+
+    return 0;
+}
+
+uintptr_t
+subr_mutex_sema(struct testdata *data)
+{
+    while (sem_wait(&data->sema.sema))
+        continue;
+
+    data->sema.cnt++;
+    sem_post(&data->sema.sema);
+
+    return 0;
+}
 
 static inline void
 subr_ticket_lock(struct testdata *data)
@@ -308,16 +330,6 @@ subr_ticket(struct testdata *data)
 }
 
 uintptr_t
-subr_mutex(struct testdata *data)
-{
-    pthread_mutex_lock(&data->mutex.mtx);
-    data->mutex.cnt++;
-    pthread_mutex_unlock(&data->mutex.mtx);
-
-    return 0;
-}
-
-uintptr_t
 subr_sema(struct testdata *data)
 {
     while (sem_wait(&data->sema.sema))
@@ -335,7 +347,7 @@ subr_sema(struct testdata *data)
  * user data structure.
  */
 static int
-subr_lfstack_init(struct testdata *data)
+subr_stack_lockfree_init(struct testdata *data)
 {
     struct lfstack *lfstack;
     int nelem = data->cpumax;
@@ -358,7 +370,7 @@ subr_lfstack_init(struct testdata *data)
 }
 
 uintptr_t
-subr_lfstack(struct testdata *data)
+subr_stack_lockfree(struct testdata *data)
 {
     void *item;
 
@@ -374,8 +386,8 @@ subr_lfstack(struct testdata *data)
 /* A spinlock based stack uses a pointer within the user's data structure
  * to link freed items onto the stack and a simple spinlock to protect
  * the head of the list.  Unlike lfstack, this stack requires storage
- * within the user's data structure for list linkage, but has no real
- * item limit.
+ * within the user's data structure for list linkage, but is limited
+ * only by the amount of available memory.
  */
 struct slnode {
     void  *next;
@@ -383,7 +395,7 @@ struct slnode {
 };
 
 static int
-subr_slstack_init(struct testdata *data)
+subr_stack_spinlock_init(struct testdata *data)
 {
     int nelem = data->cpumax;
     struct slnode *node;
@@ -407,10 +419,10 @@ subr_slstack_init(struct testdata *data)
 static void
 subr_slstack_push(struct testdata *data, struct slnode *node)
 {
-    subr_spin_lock(&data->slstack.lock);
+    subr_cmpxchg_lock(&data->slstack.lock);
     node->next = data->slstack.head;
     data->slstack.head = node;
-    subr_spin_unlock(&data->slstack.lock);
+    subr_cmpxchg_unlock(&data->slstack.lock);
 }
 
 static struct slnode *
@@ -418,17 +430,17 @@ subr_slstack_pop(struct testdata *data)
 {
     struct slnode *node;
 
-    subr_spin_lock(&data->slstack.lock);
+    subr_cmpxchg_lock(&data->slstack.lock);
     node = data->slstack.head;
     if (node)
         data->slstack.head = node->next;
-    subr_spin_unlock(&data->slstack.lock);
+    subr_cmpxchg_unlock(&data->slstack.lock);
 
     return node;
 }
 
 uintptr_t
-subr_slstack(struct testdata *data)
+subr_stack_spinlock(struct testdata *data)
 {
     struct slnode *node;
 
@@ -444,7 +456,7 @@ subr_init(struct testdata *data, subr_func *func)
 {
     int rc = 0;
 
-    if (atomic_inc(&data->refcnt) > 1)
+    if (atomic_inc(&data->refcnt) > 0)
         return 0;
 
     if (func == subr_xoroshiro) {
@@ -454,23 +466,26 @@ subr_init(struct testdata *data, subr_func *func)
         atomic_store(&data->ticket.head, 0);
         atomic_store(&data->ticket.tail, 1);
     }
-    else if (func == subr_spin) {
-        atomic_store(&data->spin.lock, 0);
+    else if (func == subr_spin_cmpxchg) {
+        atomic_store(&data->spin_cmpxchg.lock, 0);
     }
-    else if (func == subr_ptspin) {
-        rc = pthread_spin_init(&data->ptspin.lock, 0);
+    else if (func == subr_spin_pthread) {
+        rc = pthread_spin_init(&data->spin_pthread.lock, 0);
     }
-    else if (func == subr_mutex) {
-        rc =pthread_mutex_init(&data->mutex.mtx, NULL);
+    else if (func == subr_mutex_pthread) {
+        rc = pthread_mutex_init(&data->mutex_pthread.mtx, NULL);
+    }
+    else if (func == subr_mutex_sema) {
+        rc = sem_init(&data->sema.sema, 0, 1);
     }
     else if (func == subr_sema) {
         rc = sem_init(&data->sema.sema, 0, data->cpumax);
     }
-    else if (func == subr_lfstack) {
-        rc = subr_lfstack_init(data);
+    else if (func == subr_stack_lockfree) {
+        rc = subr_stack_lockfree_init(data);
     }
-    else if (func == subr_slstack) {
-        rc = subr_slstack_init(data);
+    else if (func == subr_stack_spinlock) {
+        rc = subr_stack_spinlock_init(data);
     }
 
     return rc;
@@ -482,19 +497,19 @@ subr_fini(struct testdata *data, subr_func *func)
     if (atomic_dec(&data->refcnt) > 1)
         return;
 
-    if (func == subr_ptspin) {
-        pthread_spin_destroy(&data->ptspin.lock);
+    if (func == subr_spin_pthread) {
+        pthread_spin_destroy(&data->spin_pthread.lock);
     }
-    else if (func == subr_mutex) {
-        pthread_mutex_destroy(&data->mutex.mtx);
+    else if (func == subr_mutex_pthread) {
+        pthread_mutex_destroy(&data->mutex_pthread.mtx);
     }
     else if (func == subr_sema) {
         sem_destroy(&data->sema.sema);
     }
-    else if (func == subr_lfstack) {
+    else if (func == subr_stack_lockfree) {
         lfstack_destroy(data->lfstack.lfstack, free);
     }
-    else if (func == subr_slstack) {
+    else if (func == subr_stack_spinlock) {
         struct slnode *node;
 
         while (( node = subr_slstack_pop(data) )) {

@@ -138,7 +138,7 @@ struct tdargs {
 };
 
 struct test testv[] = {
-    { subr_baseline,        1, 1, "baseline",            "baseline" },
+    { subr_baseline,        1, 1, "baseline",            "call empty function" },
     { subr_inc_tls,         0, 0, "inc-tls",             "inc tls var" },
     { subr_inc_atomic,      1, 0, "inc-atomic",          "inc atomic (relaxed)" },
     { subr_inc_atomic_cst,  1, 0, "inc-atomic-cst",      "inc atomic (seq cst)" },
@@ -171,12 +171,13 @@ struct test testv[] = {
 #endif
     { subr_clock,           0, 0, "sys-clock-gettime",   "monotonic" },
     { subr_ticket,          1, 0, "lock-ticket",         "lock+inc+unlock" },
-    { subr_spin,            1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
-    { subr_ptspin,          1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
-    { subr_mutex,           1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
-    { subr_sema,            1, 0, "lock-semaphore",      "wait+inc+post (uncontended)" },
-    { subr_slstack,         1, 0, "stack-spinlock",      "pop+inc+push" },
-    { subr_lfstack,         1, 0, "stack-lockfree",      "pop+inc+push" },
+    { subr_spin_cmpxchg,    1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
+    { subr_spin_pthread,    1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
+    { subr_mutex_pthread,   1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
+    { subr_mutex_sema,      1, 0, "lock-mutex-sema",     "wait+inc+post (value=1)" },
+    { subr_sema,            1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
+    { subr_stack_spinlock,  1, 0, "stack-spinlock",      "lock+pop+inc+push+unlock" },
+    { subr_stack_lockfree,  1, 0, "stack-lockfree",      "pop+inc+push" },
     { NULL, 0, 0, NULL, NULL }
 };
 
@@ -632,10 +633,16 @@ main(int argc, char **argv)
         //cyclestot = 0;
         calls_total = 0;
 
+        /* The first test loop to obtain the minimum serialized latency
+         * runs only for a short time...
+         */
         sleep((duration / 2.0) + 1);
         testrunning0 = false;
 
-        sleep(duration + 1);
+        /* The second test loop to obtain the maximum throughput runs
+         * for the full duration specified by the -d option.
+         */
+        usleep(duration * 1000000 - 50000);
         testrunning1 = false;
 
         for (size_t i = 0; i < CPU_SETSIZE; ++i) {
@@ -681,14 +688,17 @@ main(int argc, char **argv)
             }
 
             if (headers) {
-                printf("\n%3s %5s %*s %9s %7s %8s   %7s %7s\n",
-                       "", "MHz", calls_width, "tot",
-                       "avg", "avg", "avg", "sermin", "sermin");
+                printf("\n%3s %5s %*s %9s %9s %8s %8s   %7s %7s\n",
+                       "", "MHz",
+                       calls_width, "total",
+                       "total",
+                       "avg/cpu", "avg/cpu", "avg/cpu", "sermin", "sermin");
 
-                printf("%3s %5s %*s %9s %7s %8s   %7s %7s  %-*s  %s\n",
+                printf("%3s %5s %*s %9s %9s %8s %8s   %7s %7s  %-*s  %s\n",
                        (verbosity > 0) ? "CPU" : "-",
                        (USE_CLOCK) ? "CLK" : "TSC",
                        calls_width, "MCALLS",
+                       "MCALLS/s",
                        "MCALLS/s",
                        (USE_CLOCK) ? "NSECS" : "CYCLES",
                        "NSECS",
@@ -700,10 +710,11 @@ main(int argc, char **argv)
             }
 
             if (verbosity > 0) {
-                printf("%3zu %5lu %*.2lf %9.2lf %7.1lf %8.2lf   %7.1lf%s %7.2lf  %-*s  %s\n",
+                printf("%3zu %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf%s%7.2lf  %-*s  %s\n",
                        args->cpu,
                        tsc_freq / 1000000,
                        calls_width, (stats[1].calls / 1000000.0),
+                       tsc_freq / (cptavg * 1000000),
                        tsc_freq / (cptavg * 1000000),
                        cptavg,
                        (cptavg * 1000000000.0) / tsc_freq,
@@ -717,10 +728,11 @@ main(int argc, char **argv)
         cptavg = cptavgtot / CPU_COUNT(&test_mask);
         cptmin = cptmintot;
 
-        printf("%3s %5lu %*.2lf %9.2lf %7.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
+        printf("%3s %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
                "-",
                tsc_freq / 1000000,
                calls_width, (calls_total / 1000000.0),
+               (tsc_freq * CPU_COUNT(&test_mask)) / (cptavg * 1000000),
                tsc_freq / (cptavg * 1000000),
                cptavg,
                (cptavg * 1000000000.0) / tsc_freq,
