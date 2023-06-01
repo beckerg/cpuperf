@@ -39,12 +39,12 @@ struct prng {
 };
 
 struct mutex_pthread {
-    pthread_mutex_t mtx;
+    pthread_mutex_t lock;
     uint64_t        cnt;
 };
 
 struct mutex_sema {
-    sem_t    sema;
+    sem_t    lock;
     uint64_t cnt;
 };
 
@@ -65,17 +65,21 @@ struct spin_pthread {
 };
 
 struct sema {
-    sem_t    sema;
-    uint64_t cnt;
+    sem_t sema;
 };
 
 struct stack_lockfree {
     struct lfstack *lfstack;
 };
 
-struct stack_spinlock {
-    atomic_int  lock;
-    void       *head;
+struct stack_mutex {
+    pthread_mutex_t  lock;
+    void            *head;
+};
+
+struct stack_sema {
+    sem_t            lock;
+    void            *head;
 };
 
 struct testdata {
@@ -91,7 +95,8 @@ struct testdata {
         struct mutex_sema       mutex_sema;
         struct sema             sema;
         struct stack_lockfree   lfstack;
-        struct stack_spinlock   slstack;
+        struct stack_mutex      stack_mutex;
+        struct stack_sema       stack_sema;
     };
 
     atomic_int refcnt;
@@ -161,7 +166,8 @@ extern subr_func subr_mutex_sema;
 extern subr_func subr_sema;
 
 extern subr_func subr_stack_lockfree;
-extern subr_func subr_stack_spinlock;
+extern subr_func subr_stack_mutex;
+extern subr_func subr_stack_sema;
 
 extern int  subr_init(struct testdata *data, subr_func *func);
 extern void subr_fini(struct testdata *data, subr_func *func);

@@ -176,8 +176,9 @@ struct test testv[] = {
     { subr_mutex_pthread,   1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
     { subr_mutex_sema,      1, 0, "lock-mutex-sema",     "wait+inc+post (value=1)" },
     { subr_sema,            1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
-    { subr_stack_spinlock,  1, 0, "stack-spinlock",      "lock+pop+inc+push+unlock" },
     { subr_stack_lockfree,  1, 0, "stack-lockfree",      "pop+inc+push" },
+    { subr_stack_mutex,     1, 0, "stack-mutex",         "lock+pop+inc+push+unlock" },
+    { subr_stack_sema,      1, 0, "stack-sema",          "lock+pop+inc+push+unlock" },
     { NULL, 0, 0, NULL, NULL }
 };
 
@@ -691,8 +692,9 @@ main(int argc, char **argv)
                 printf("\n%3s %5s %*s %9s %9s %8s %8s   %7s %7s\n",
                        "", "MHz",
                        calls_width, "total",
-                       "total",
-                       "avg/cpu", "avg/cpu", "avg/cpu", "sermin", "sermin");
+                       "avg",
+                       "avg/cpu", "avg/cpu", "avg/cpu",
+                       "sermin", "sermin");
 
                 printf("%3s %5s %*s %9s %9s %8s %8s   %7s %7s  %-*s  %s\n",
                        (verbosity > 0) ? "CPU" : "-",
