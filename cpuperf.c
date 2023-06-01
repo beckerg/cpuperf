@@ -102,7 +102,7 @@ struct clp_option optionv[] = {
     CLP_OPTION('s',     bool,    shared, NULL, "run shared tests"),
     CLP_OPTION('t',   string,   teststr, NULL, "specify tests to run"),
 
-    CLP_XOPTION('l',    bool,  testlist, NULL, "list tests",
+    CLP_XOPTION('l',    bool,  testlist, "dfHt", "list tests",
                 "testlist", NULL, NULL, clp_posparam_none),
 
     CLP_OPTION_VERBOSITY(verbosity),
@@ -337,6 +337,9 @@ test_main(void *arg)
 
     stats->start = itv_start();
 
+    /* First, we repeatedly measure the time for a single call to the test
+     * function to try and determine it's minimum serialized latency.
+     */
     while (testrunning0) {
         uint64_t start, stop;
 
@@ -364,6 +367,8 @@ test_main(void *arg)
     latavg = 0;
     iters = 0;
 
+    /* Switch to second stats buffer.
+     */
     ++stats;
 
     /* Spin here to synchronize with all threads and maybe kick in turbo boost...
@@ -373,6 +378,10 @@ test_main(void *arg)
 
     stats->start = itv_start();
 
+    /* Next, we repeatedly call the test function with minimal loop
+     * overhead to try and determine the maximum throughput (i.e.,
+     * the minimum unserialized latency).
+     */
     while (testrunning1) {
         func(data);
         func(data);
@@ -398,6 +407,7 @@ main(int argc, char **argv)
     double cyc_baseline;
     struct test *test;
     size_t tdargsvsz;
+    size_t maxcpuidx;
     int calls_width;
     int name_width;
     int rc;
@@ -542,7 +552,12 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
-    tdargsvsz = sizeof(*tdargsv) * posparamv->argc;
+    for (maxcpuidx = CPU_SETSIZE - 1; maxcpuidx >= 0; --maxcpuidx) {
+        if (CPU_ISSET(maxcpuidx, &test_mask))
+            break;
+    }
+
+    tdargsvsz = sizeof(*tdargsv) * (maxcpuidx + 1);
 
     tdargsv = aligned_alloc(4096, roundup(tdargsvsz, 4096));
     if (!tdargsv) {
@@ -577,6 +592,8 @@ main(int argc, char **argv)
             struct tdargs *args = tdargsv + CPU_FFS(&test_mask);
 
             shared_data = &args->testdata;
+            atomic_store(&shared_data->refcnt, 0);
+            shared_data->cpumax = CPU_COUNT(&test_mask);
         }
 
         /* Start one test thread for each cpu given on the command line.
@@ -592,12 +609,13 @@ main(int argc, char **argv)
             args->stats[1].start = cyc_start + (duration / 2.0) + tsc_freq;
             args->test = test;
 
-            args->data = &args->testdata;
-            atomic_store(&args->data->refcnt, 0);
-            args->data->cpumax = CPU_COUNT(&test_mask);
-
-            if (shared_data)
+            if (shared_data) {
                 args->data = shared_data;
+            } else {
+                args->data = &args->testdata;
+                atomic_store(&args->data->refcnt, 0);
+                args->data->cpumax = CPU_COUNT(&test_mask);
+            }
 
             subr_init(args->data, test->func);
 
@@ -663,11 +681,11 @@ main(int argc, char **argv)
             }
 
             if (headers) {
-                printf("\n%3s %5s %*s %9s %7s %7s   %7s %7s\n",
+                printf("\n%3s %5s %*s %9s %7s %8s   %7s %7s\n",
                        "", "MHz", calls_width, "tot",
                        "avg", "avg", "avg", "sermin", "sermin");
 
-                printf("%3s %5s %*s %9s %7s %7s   %7s %7s  %-*s  %s\n",
+                printf("%3s %5s %*s %9s %7s %8s   %7s %7s  %-*s  %s\n",
                        (verbosity > 0) ? "CPU" : "-",
                        (USE_CLOCK) ? "CLK" : "TSC",
                        calls_width, "MCALLS",
@@ -682,7 +700,7 @@ main(int argc, char **argv)
             }
 
             if (verbosity > 0) {
-                printf("%3zu %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf%s %7.2lf  %-*s  %s\n",
+                printf("%3zu %5lu %*.2lf %9.2lf %7.1lf %8.2lf   %7.1lf%s %7.2lf  %-*s  %s\n",
                        args->cpu,
                        tsc_freq / 1000000,
                        calls_width, (stats[1].calls / 1000000.0),
@@ -699,7 +717,7 @@ main(int argc, char **argv)
         cptavg = cptavgtot / CPU_COUNT(&test_mask);
         cptmin = cptmintot;
 
-        printf("%3s %5lu %*.2lf %9.2lf %7.1lf %7.2lf   %7.1lf %7.2lf  %-*s  %s\n",
+        printf("%3s %5lu %*.2lf %9.2lf %7.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
                "-",
                tsc_freq / 1000000,
                calls_width, (calls_total / 1000000.0),

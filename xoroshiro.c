@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+/* Use splitmix64 to initialize s[], seed may be anything.
+ */
 void
 xoroshiro128plus_init(uint64_t *s, uint64_t seed)
 {
