@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Greg Becker.  All rights reserved.
+ * Copyright (c) 2021,2023 Greg Becker.  All rights reserved.
  */
 
 #ifndef SUBR_H
@@ -50,7 +50,7 @@ struct mutex_sema {
 
 struct ticket {
     atomic_ullong head;
-    atomic_ullong tail;
+    atomic_ullong tail __aligned(64);
     uint64_t      cnt;
 };
 

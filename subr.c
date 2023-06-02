@@ -239,14 +239,7 @@ subr_cmpxchg_lock(atomic_int *ptr)
 static inline void
 subr_cmpxchg_unlock(atomic_int *ptr)
 {
-#if 1
     atomic_store_explicit(ptr, 0, memory_order_release);
-#else
-    int old = 1;
-
-    while (!atomic_cmpxchg_rel(ptr, &old, 0))
-        old = 1;
-#endif
 }
 
 uintptr_t
@@ -292,39 +285,33 @@ subr_mutex_sema(struct testdata *data)
 }
 
 static inline void
-subr_ticket_lock(struct testdata *data)
+subr_ticket_lock(struct ticket *ticket)
 {
-    uint64_t head, tail;
+    uint64_t head;
 
-    head = atomic_inc(&data->ticket.head);
+    head = atomic_inc_acq(&ticket->head);
 
-    while ((tail = atomic_load_acq(&data->ticket.tail)) < head) {
-
-#if HAVE_RDTSC
-        uint64_t stop = _rdtsc() + (head - tail) * 256;
-
-        cpu_pause();
-
-        while (_rdtsc() < stop)
-            continue;
-#else
-        cpu_pause();
-#endif
+    while (atomic_load_acq(&ticket->tail) != head) {
+        while (atomic_load_explicit(&ticket->tail, memory_order_relaxed) != head) {
+            cpu_pause();
+        }
     }
 }
 
 static inline void
-subr_ticket_unlock(struct testdata *data)
+subr_ticket_unlock(struct ticket *ticket)
 {
-    atomic_inc_rel(&data->ticket.tail);
+    atomic_inc_rel(&ticket->tail);
 }
 
 uintptr_t
 subr_ticket(struct testdata *data)
 {
-    subr_ticket_lock(data);
-    data->ticket.cnt++;
-    subr_ticket_unlock(data);
+    struct ticket *ticket = &data->ticket;
+
+    subr_ticket_lock(ticket);
+    ticket->cnt++;
+    subr_ticket_unlock(ticket);
 
     return 0;
 }
@@ -420,10 +407,8 @@ subr_stack_mutex_init(struct testdata *data)
 }
 
 static void
-subr_stack_mutex_push(struct testdata *data, struct stack_node *node)
+subr_stack_mutex_push(struct stack_mutex *stack, struct stack_node *node)
 {
-    struct stack_mutex *stack = &data->stack_mutex;
-
     pthread_mutex_lock(&stack->lock);
     node->next = stack->head;
     stack->head = node;
@@ -431,9 +416,8 @@ subr_stack_mutex_push(struct testdata *data, struct stack_node *node)
 }
 
 static struct stack_node *
-subr_stack_mutex_pop(struct testdata *data)
+subr_stack_mutex_pop(struct stack_mutex *stack)
 {
-    struct stack_mutex *stack = &data->stack_mutex;
     struct stack_node *node;
 
     pthread_mutex_lock(&stack->lock);
@@ -448,11 +432,12 @@ subr_stack_mutex_pop(struct testdata *data)
 uintptr_t
 subr_stack_mutex(struct testdata *data)
 {
+    struct stack_mutex *stack = &data->stack_mutex;
     struct stack_node *node;
 
-    node = subr_stack_mutex_pop(data);
+    node = subr_stack_mutex_pop(stack);
     node->cnt++;
-    subr_stack_mutex_push(data, node);
+    subr_stack_mutex_push(stack, node);
 
     return 0;
 }
@@ -484,10 +469,8 @@ subr_stack_sema_init(struct testdata *data)
 }
 
 static void
-subr_stack_sema_push(struct testdata *data, struct stack_node *node)
+subr_stack_sema_push(struct stack_sema *stack, struct stack_node *node)
 {
-    struct stack_sema *stack = &data->stack_sema;
-
     while (sem_wait(&stack->lock))
         continue;
     node->next = stack->head;
@@ -496,9 +479,8 @@ subr_stack_sema_push(struct testdata *data, struct stack_node *node)
 }
 
 static struct stack_node *
-subr_stack_sema_pop(struct testdata *data)
+subr_stack_sema_pop(struct stack_sema *stack)
 {
-    struct stack_sema *stack = &data->stack_sema;
     struct stack_node *node;
 
     while (sem_wait(&stack->lock))
@@ -514,11 +496,12 @@ subr_stack_sema_pop(struct testdata *data)
 uintptr_t
 subr_stack_sema(struct testdata *data)
 {
+    struct stack_sema *stack = &data->stack_sema;
     struct stack_node *node;
 
-    node = subr_stack_sema_pop(data);
+    node = subr_stack_sema_pop(stack);
     node->cnt++;
-    subr_stack_sema_push(data, node);
+    subr_stack_sema_push(stack, node);
 
     return 0;
 }
@@ -536,7 +519,7 @@ subr_init(struct testdata *data, subr_func *func)
     }
     else if (func == subr_ticket) {
         atomic_store(&data->ticket.head, 0);
-        atomic_store(&data->ticket.tail, 1);
+        atomic_store(&data->ticket.tail, 0);
     }
     else if (func == subr_spin_cmpxchg) {
         atomic_store(&data->spin_cmpxchg.lock, 0);
@@ -588,21 +571,23 @@ subr_fini(struct testdata *data, subr_func *func)
         lfstack_destroy(data->lfstack.lfstack, free);
     }
     else if (func == subr_stack_mutex) {
+        struct stack_mutex *stack = &data->stack_mutex;
         struct stack_node *node;
 
-        while (( node = subr_stack_mutex_pop(data) )) {
+        while (( node = subr_stack_mutex_pop(stack) )) {
             free(node);
         }
 
-        pthread_mutex_destroy(&data->stack_mutex.lock);
+        pthread_mutex_destroy(&stack->lock);
     }
     else if (func == subr_stack_sema) {
+        struct stack_sema *stack = &data->stack_sema;
         struct stack_node *node;
 
-        while (( node = subr_stack_sema_pop(data) )) {
+        while (( node = subr_stack_sema_pop(stack) )) {
             free(node);
         }
 
-        sem_destroy(&data->stack_sema.lock);
+        sem_destroy(&stack->lock);
     }
 }
