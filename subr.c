@@ -284,6 +284,26 @@ subr_mutex_sema(struct testdata *data)
     return 0;
 }
 
+uintptr_t
+subr_rwlock_wrlock(struct testdata *data)
+{
+    pthread_rwlock_wrlock(&data->mutex_rwlock.lock);
+    data->mutex_rwlock.cnt++;
+    pthread_rwlock_unlock(&data->mutex_rwlock.lock);
+
+    return 0;
+}
+
+uintptr_t
+subr_rwlock_rdlock(struct testdata *data)
+{
+    pthread_rwlock_rdlock(&data->mutex_rwlock.lock);
+    data->mutex_rwlock.cnt++;
+    pthread_rwlock_unlock(&data->mutex_rwlock.lock);
+
+    return 0;
+}
+
 static inline void
 subr_ticket_lock(struct ticket *ticket)
 {
@@ -521,6 +541,12 @@ subr_init(struct testdata *data, subr_func *func)
         atomic_store(&data->ticket.head, 0);
         atomic_store(&data->ticket.tail, 0);
     }
+    else if (func == subr_rwlock_rdlock) {
+        rc = pthread_rwlock_init(&data->mutex_rwlock.lock, NULL);
+    }
+    else if (func == subr_rwlock_wrlock) {
+        rc = pthread_rwlock_init(&data->mutex_rwlock.lock, NULL);
+    }
     else if (func == subr_spin_cmpxchg) {
         atomic_store(&data->spin_cmpxchg.lock, 0);
     }
@@ -555,7 +581,13 @@ subr_fini(struct testdata *data, subr_func *func)
     if (atomic_dec(&data->refcnt) > 1)
         return;
 
-    if (func == subr_spin_pthread) {
+    if (func == subr_rwlock_rdlock) {
+        pthread_rwlock_destroy(&data->mutex_rwlock.lock);
+    }
+    else if (func == subr_rwlock_wrlock) {
+        pthread_rwlock_destroy(&data->mutex_rwlock.lock);
+    }
+    else if (func == subr_spin_pthread) {
         pthread_spin_destroy(&data->spin_pthread.lock);
     }
     else if (func == subr_mutex_pthread) {

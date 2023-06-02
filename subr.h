@@ -43,6 +43,11 @@ struct mutex_pthread {
     uint64_t        cnt;
 };
 
+struct mutex_rwlock {
+    pthread_rwlock_t lock;
+    uint64_t         cnt;
+};
+
 struct mutex_sema {
     sem_t    lock;
     uint64_t cnt;
@@ -92,6 +97,7 @@ struct testdata {
         struct spin_cmpxchg     spin_cmpxchg;
         struct spin_pthread     spin_pthread;
         struct mutex_pthread    mutex_pthread;
+        struct mutex_rwlock     mutex_rwlock;
         struct mutex_sema       mutex_sema;
         struct sema             sema;
         struct stack_lockfree   lfstack;
@@ -157,6 +163,8 @@ extern subr_func subr_mod128;
 
 extern subr_func subr_clock;
 
+extern subr_func subr_rwlock_rdlock;
+extern subr_func subr_rwlock_wrlock;
 extern subr_func subr_ticket;
 extern subr_func subr_spin_cmpxchg;
 extern subr_func subr_spin_pthread;

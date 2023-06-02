@@ -85,6 +85,7 @@ char *teststr;
 int verbosity;
 int left;
 
+pthread_barrier_t barrier;
 volatile bool testrunning0;
 volatile bool testrunning1;
 
@@ -170,6 +171,8 @@ struct test testv[] = {
     { subr_pause,           0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
 #endif
     { subr_clock,           0, 0, "sys-clock-gettime",   "monotonic" },
+    { subr_rwlock_rdlock,   1, 0, "lock-rwlock-rdlock",  "rdlock+inc+unlock (no writers)" },
+    { subr_rwlock_wrlock,   1, 0, "lock-rwlock-wrlock",  "wrlock+inc+unlock (no readers)" },
     { subr_ticket,          1, 0, "lock-ticket",         "lock+inc+unlock" },
     { subr_spin_cmpxchg,    1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
     { subr_spin_pthread,    1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
@@ -308,7 +311,6 @@ test_main(void *arg)
     struct test *test;
     subr_func *func;
     cpuset_t nmask;
-    u_long iters;
     int rc;
 
     CPU_ZERO(&nmask);
@@ -316,7 +318,7 @@ test_main(void *arg)
 
     rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
     if (rc) {
-        eprint(EINVAL, "unable to affine thread %lu to CPU %zu", args->tid, args->cpu);
+        eprint(rc, "unable to affine thread %lu to CPU %zu", args->tid, args->cpu);
         pthread_exit(NULL);
     }
 
@@ -327,15 +329,19 @@ test_main(void *arg)
 
     latmin = DBL_MAX;
     latavg = 0;
-    iters = 0;
 
-    /* Spin here to synchronize with all threads and maybe kick in turbo boost...
+    /* Rendezvous with the leader...
      */
-    while (itv_cycles() < stats->start) {
-        if (itv_cycles() % 8 == 0) {
-            cpu_pause();
-        }
+    rc = pthread_barrier_wait(&barrier);
+    if (rc > 0) {
+        eprint(rc, "CPU %zu unable to rendezvous with leader", args->cpu);
+        pthread_exit(NULL);
     }
+
+    /* Spin here to synchronize with all test threads and maybe kick in turbo boost...
+     */
+    while (itv_cycles() < stats->start)
+        cpu_pause();
 
     stats->start = itv_start();
 
@@ -355,25 +361,30 @@ test_main(void *arg)
         if (stop - start < latmin)
             latmin = stop - start;
 
-        ++iters;
+        stats->calls += 4;
     }
 
     stats->stop = itv_stop();
 
-    stats->latavg = latavg / iters;
+    stats->latavg = latavg / stats->calls;
     stats->latmin = latmin;
-    stats->calls = iters;
-
 
     latmin = DBL_MAX;
     latavg = 0;
-    iters = 0;
+
+    /* Rendezvous with the leader...
+     */
+    rc = pthread_barrier_wait(&barrier);
+    if (rc > 0) {
+        eprint(rc, "CPU %zu unable to rendezvous with leader", args->cpu);
+        pthread_exit(NULL);
+    }
 
     /* Switch to second stats buffer.
      */
     ++stats;
 
-    /* Spin here to synchronize with all threads and maybe kick in turbo boost...
+    /* Spin here to synchronize with all test threads and maybe kick in turbo boost...
      */
     while (itv_cycles() < stats->start)
         cpu_pause();
@@ -389,14 +400,22 @@ test_main(void *arg)
         func(data);
         func(data);
         func(data);
-        ++iters;
+
+        stats->calls += 4;
     }
 
     stats->stop = itv_stop();
 
-    stats->latavg = (stats->stop - stats->start) / (iters * 4.0);
+    stats->latavg = (stats->stop - stats->start) / stats->calls;
     stats->latmin = stats->latavg;
-    stats->calls = iters * 4;
+
+    /* Rendezvous with the leader...
+     */
+    rc = pthread_barrier_wait(&barrier);
+    if (rc > 0) {
+        eprint(rc, "CPU %zu unable to rendezvous with leader", args->cpu);
+        pthread_exit(NULL);
+    }
 
     pthread_exit(NULL);
 }
@@ -572,21 +591,28 @@ main(int argc, char **argv)
     cyc_baseline = 0;
     calls_width = 0;
 
+    rc = pthread_barrier_init(&barrier, NULL, CPU_COUNT(&test_mask) + 1);
+    if (rc) {
+        eprint(errno, "unable to initialize barrier");
+        exit(EX_OSERR);
+    }
+
     if (setpriority(PRIO_PROCESS, 0, -20) && verbosity > 0)
         eprint(0, "run as root to reduce jitter");
 
     for (test = testv; test->name; ++test) {
-        double cptavgtot, cptmintot, cptavg, cptmin;
+        double latavg_total, latmin_total, latavg, latmin;
         struct testdata *shared_data = NULL;
-        uint64_t cyc_start, calls_total;
-        //double cyclestot;
+        uint64_t cyc_start0, cyc_start1;
+        uint64_t calls_total;
+        double cycles_total;
+        double cycles_avg;
         char *suspicious;
 
         if (!test->matched)
             continue;
 
         memset(tdargsv, 0, tdargsvsz);
-        cyc_start = itv_cycles() + tsc_freq;
         testrunning0 = true;
         testrunning1 = true;
 
@@ -598,6 +624,9 @@ main(int argc, char **argv)
             shared_data->cpumax = CPU_COUNT(&test_mask);
         }
 
+        cyc_start0 = itv_cycles() + tsc_freq;
+        cyc_start1 = itv_cycles() + tsc_freq * 5;
+
         /* Start one test thread for each cpu given on the command line.
          */
         for (size_t i = 0; i < CPU_SETSIZE; ++i) {
@@ -607,8 +636,8 @@ main(int argc, char **argv)
                 continue;
 
             args->cpu = i;
-            args->stats[0].start = cyc_start;
-            args->stats[1].start = cyc_start + (duration / 2.0) + tsc_freq;
+            args->stats[0].start = cyc_start0;
+            args->stats[1].start = cyc_start1;
             args->test = test;
 
             if (shared_data) {
@@ -628,28 +657,62 @@ main(int argc, char **argv)
             }
         }
 
-        cptavgtot = cptavg = 0;
-        cptmintot = DBL_MAX;
-        cptmin = DBL_MAX;
-        //cyclestot = 0;
-        calls_total = 0;
-
-        /* The first test loop to obtain the minimum serialized latency
-         * runs only for a short time...
+        /* Rendezvous with all test threads...
          */
-        sleep((duration / 2.0) + 1);
+        rc = pthread_barrier_wait(&barrier);
+        if (rc > 0) {
+            eprint(rc, "leader unable to rendezvous with test threads");
+            pthread_exit(NULL);
+        }
+
+        /* Spin here to synchronize with all test threads...
+         */
+        while (itv_cycles() < cyc_start0)
+            cpu_pause();
+
+        /* The first test loop obtains the minimum serialized latency
+         * and runs only for a short time...
+         */
+        sleep(3);
         testrunning0 = false;
 
-        /* The second test loop to obtain the maximum throughput runs
-         * for the full duration specified by the -d option.
+        /* Rendezvous with all test threads...
+         */
+        rc = pthread_barrier_wait(&barrier);
+        if (rc > 0) {
+            eprint(rc, "leader unable to rendezvous with test threads");
+            pthread_exit(NULL);
+        }
+
+        /* Spin here to synchronize with all test threads...
+         */
+        while (itv_cycles() < cyc_start1)
+            cpu_pause();
+
+        /* The second test loop obtains the maximum throughput and runs
+         * for the full duration specified via the -d option.
          */
         usleep(duration * 1000000 - 50000);
         testrunning1 = false;
 
+        /* Rendezvous with all test threads...
+         */
+        rc = pthread_barrier_wait(&barrier);
+        if (rc > 0) {
+            eprint(rc, "leader unable to rendezvous with test threads");
+            pthread_exit(NULL);
+        }
+
+        latavg_total = latavg = 0;
+        latmin_total = DBL_MAX;
+        latmin = DBL_MAX;
+        cycles_total = 0;
+        calls_total = 0;
+
         for (size_t i = 0; i < CPU_SETSIZE; ++i) {
             struct tdargs *args = tdargsv + i;
             struct stats *stats = args->stats;
-            //double cycles;
+            double cycles;
             void *res;
 
             if (!CPU_ISSET(i, &test_mask))
@@ -663,23 +726,23 @@ main(int argc, char **argv)
 
             subr_fini(args->data, test->func);
 
-            //cycles = stats[1].stop - stats[1].start;
-            //cyclestot += cycles;
+            cycles = stats[1].stop - stats[1].start;
+            cycles_total += cycles;
 
-            cptavg = stats[1].latavg;
-            if (cptavg > cyc_baseline)
-                cptavg -= cyc_baseline;
-            cptavgtot += cptavg;
+            latavg = stats[1].latavg;
+            if (latavg > cyc_baseline)
+                latavg -= cyc_baseline;
+            latavg_total += latavg;
 
-            cptmin = stats[0].latmin;
-            if (cptmin > cyc_baseline) {
-                cptmin -= cyc_baseline;
+            latmin = stats[0].latmin;
+            if (latmin > cyc_baseline) {
+                latmin -= cyc_baseline;
                 suspicious = " ";
             } else {
                 suspicious = "*";
             }
-            if (cptmin < cptmintot)
-                cptmintot = cptmin;
+            if (latmin < latmin_total)
+                latmin_total = latmin;
 
             calls_total += stats[1].calls;
 
@@ -716,35 +779,36 @@ main(int argc, char **argv)
                        args->cpu,
                        tsc_freq / 1000000,
                        calls_width, (stats[1].calls / 1000000.0),
-                       tsc_freq / (cptavg * 1000000),
-                       tsc_freq / (cptavg * 1000000),
-                       cptavg,
-                       (cptavg * 1000000000.0) / tsc_freq,
-                       cptmin,
+                       (stats[1].calls / (cycles / tsc_freq)) / 1000000,
+                       (stats[1].calls / (cycles / tsc_freq)) / 1000000,
+                       latavg,
+                       (latavg * 1000000000.0) / tsc_freq,
+                       latmin,
                        suspicious,
-                       (cptmin * 1000000000.0) / tsc_freq,
+                       (latmin * 1000000000.0) / tsc_freq,
                        name_width, test->name, test->desc);
             }
         }
 
-        cptavg = cptavgtot / CPU_COUNT(&test_mask);
-        cptmin = cptmintot;
+        cycles_avg = cycles_total / CPU_COUNT(&test_mask);
+        latavg = latavg_total / CPU_COUNT(&test_mask);
+        latmin = latmin_total;
 
         printf("%3s %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
                "-",
                tsc_freq / 1000000,
                calls_width, (calls_total / 1000000.0),
-               (tsc_freq * CPU_COUNT(&test_mask)) / (cptavg * 1000000),
-               tsc_freq / (cptavg * 1000000),
-               cptavg,
-               (cptavg * 1000000000.0) / tsc_freq,
-               cptmin,
-               (cptmin * 1000000000.0) / tsc_freq,
+               (calls_total / (cycles_avg / tsc_freq)) / 1000000,
+               (calls_total / (cycles_avg / tsc_freq)) / (CPU_COUNT(&test_mask) * 1000000),
+               latavg,
+               (latavg * 1000000000.0) / tsc_freq,
+               latmin,
+               (latmin * 1000000000.0) / tsc_freq,
                name_width, test->name, test->desc);
         fflush(stdout);
 
         if (!cyc_baseline)
-            cyc_baseline = cptmin;
+            cyc_baseline = latmin;
     }
 
     free(teststr);
