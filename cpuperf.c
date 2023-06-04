@@ -78,19 +78,19 @@ typedef cpu_set_t cpuset_t;
 
 char version[] = PROG_VERSION;
 bool headers, shared, testlist;
+int verbosity;
 uint64_t tsc_freq;
 time_t duration;
 char *progname;
 char *teststr;
-int verbosity;
-int left;
+char *cpustr;
 
 pthread_barrier_t barrier;
 volatile bool testrunning0;
 volatile bool testrunning1;
 
 struct clp_posparam posparamv[] = {
-    CLP_POSPARAM("cpuid...", string, left, NULL, NULL, "one or more CPU IDs"),
+    CLP_POSPARAM("cpuid...", string, cpustr, NULL, NULL, "one or more CPU IDs"),
     CLP_POSPARAM_END
 };
 
@@ -319,7 +319,7 @@ itv_stop(void)
 }
 
 static void
-setaffinity(cpuset_t *maskp, size_t cpu)
+affinity_set(cpuset_t *maskp, size_t cpu)
 {
     cpuset_t mask;
     int rc;
@@ -338,6 +338,22 @@ setaffinity(cpuset_t *maskp, size_t cpu)
     }
 }
 
+static void
+affinity_check(size_t cpu)
+{
+    cpuset_t mask;
+    int rc;
+
+    CPU_ZERO(&mask);
+
+    rc = pthread_getaffinity_np(pthread_self(), sizeof(&mask), &mask);
+
+    if (rc || !CPU_ISSET(cpu, &mask) || CPU_COUNT(&mask) != 1) {
+        cpuset_print(&mask, "rc %d, cpu %zu:", rc, cpu);
+        abort();
+    }
+}
+
 static void *
 test_main(void *arg)
 {
@@ -349,7 +365,7 @@ test_main(void *arg)
     subr_func *func;
     int rc;
 
-    setaffinity(NULL, args->cpu);
+    affinity_check(args->cpu);
 
     test = args->test;
     func = test->func;
@@ -668,7 +684,10 @@ main(int argc, char **argv)
             if (!CPU_ISSET(i, &test_mask))
                 continue;
 
-            setaffinity(NULL, i);
+            /* Switch to this CPU so that allocation of args and data
+             * come from the local NUMA node.
+             */
+            affinity_set(NULL, i);
 
             align = __alignof(*args);
             if (align < 128)
@@ -684,10 +703,16 @@ main(int argc, char **argv)
             args->stats[0].start = cyc_start0;
             args->stats[1].start = cyc_start1;
 
+            /* Append to the end of the list of args objects.
+             */
             *args_nextpp = args;
             args_nextpp = &args->next;
 
-            group = shared ? group_find(groupv, groupc, i) : nthreads;
+            if (shared) {
+                group = group_find(groupv, groupc, i);
+            } else {
+                group = nthreads;
+            }
 
             data = datav[group];
             if (!data) {
@@ -700,24 +725,25 @@ main(int argc, char **argv)
                     abort();
 
                 memset(data, 0, sizeof(*data));
+                data->cpumax = shared ? CPU_COUNT(&groupv[group]) : 1;
+
                 datav[group] = data;
             }
 
             args->data = data;
-            args->data->cpumax = CPU_COUNT(&test_mask);
 
             subr_init(args->data, test->func);
 
             rc = pthread_create(&args->tid, NULL, test_main, args);
             if (rc) {
-                eprint(rc, "unable to create pthread %d for cpu %zu", i, args->cpu);
+                eprint(rc, "unable to create pthread for cpu %zu", args->cpu);
                 exit(EX_OSERR);
             }
 
             nthreads++;
         }
 
-        setaffinity(&leader_mask, 0);
+        affinity_set(&leader_mask, 0);
 
         /* Rendezvous with all test threads...
          */
