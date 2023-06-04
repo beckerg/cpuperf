@@ -87,7 +87,7 @@ struct stack_sema {
     void            *head;
 };
 
-struct testdata {
+struct subr_data {
     union {
         struct inc              inc;
         struct clock            clock;
@@ -109,7 +109,24 @@ struct testdata {
     uint       cpumax;
 };
 
-typedef uintptr_t subr_func(struct testdata *);
+typedef uintptr_t subr_func(struct subr_data *);
+
+struct subr_stats {
+    uint64_t    start;
+    uint64_t    stop;
+    double      latmin;
+    double      latavg;
+    uint64_t    calls;
+};
+
+struct subr_args {
+    struct subr_data  *data;
+    subr_func         *func;
+    pthread_t          tid;
+    size_t             cpu;
+    struct subr_stats  stats[2];
+    struct subr_args  *next;
+};
 
 static inline void
 cpu_pause(void)
@@ -177,7 +194,7 @@ extern subr_func subr_stack_lockfree;
 extern subr_func subr_stack_mutex;
 extern subr_func subr_stack_sema;
 
-extern int  subr_init(struct testdata *data, subr_func *func);
-extern void subr_fini(struct testdata *data, subr_func *func);
+extern int subr_init(struct subr_args *args);
+extern void subr_fini(struct subr_args *args);
 
 #endif

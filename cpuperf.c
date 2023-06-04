@@ -120,23 +120,6 @@ struct test {
     const char *desc;
 };
 
-struct stats {
-    uint64_t    start;
-    uint64_t    stop;
-    double      latmin;
-    double      latavg;
-    uint64_t    calls;
-};
-
-struct tdargs {
-    struct testdata *data;
-    pthread_t        tid;
-    size_t           cpu;
-    struct test     *test;
-    struct stats     stats[2];
-    struct tdargs   *next;
-};
-
 struct test testv[] = {
     { subr_baseline,        1, 1, "baseline",            "call empty function" },
     { subr_inc_tls,         0, 0, "inc-tls",             "inc tls var" },
@@ -357,19 +340,17 @@ affinity_check(size_t cpu)
 static void *
 test_main(void *arg)
 {
-    struct tdargs *args = arg;
+    struct subr_args *args = arg;
+    struct subr_stats *stats;
+    struct subr_data *data;
     double latmin, latavg;
-    struct testdata *data;
-    struct stats *stats;
-    struct test *test;
     subr_func *func;
     int rc;
 
     affinity_check(args->cpu);
 
-    test = args->test;
-    func = test->func;
     data = args->data;
+    func = args->func;
     stats = args->stats;
 
     latmin = DBL_MAX;
@@ -466,7 +447,7 @@ int
 main(int argc, char **argv)
 {
     cpuset_t groupv[argc], avail_mask, leader_mask, test_mask, mask;
-    struct testdata **datav;
+    struct subr_data **datav;
     double cyc_baseline;
     struct test *test;
     size_t maxcpuidx;
@@ -652,9 +633,9 @@ main(int argc, char **argv)
         eprint(0, "run as root to reduce jitter");
 
     for (test = testv; test->name; ++test) {
+        struct subr_args *args_head, **args_nextpp, *args;
         double latavg_total, latmin_total, latavg, latmin;
         uint64_t cyc_start0, cyc_start1;
-        struct tdargs *args_head, **args_nextpp, *args;
         uint64_t calls_total;
         double cycles_total;
         double cycles_avg;
@@ -678,7 +659,7 @@ main(int argc, char **argv)
         /* Start one thread for each CPU specified on the command line.
          */
         for (size_t i = 0; i < CPU_SETSIZE; ++i) {
-            struct testdata *data;
+            struct subr_data *data;
             size_t group, align;
 
             if (!CPU_ISSET(i, &test_mask))
@@ -699,7 +680,7 @@ main(int argc, char **argv)
 
             memset(args, 0, sizeof(*args));
             args->cpu = i;
-            args->test = test;
+            args->func = test->func;
             args->stats[0].start = cyc_start0;
             args->stats[1].start = cyc_start1;
 
@@ -732,7 +713,7 @@ main(int argc, char **argv)
 
             args->data = data;
 
-            subr_init(args->data, test->func);
+            subr_init(args);
 
             rc = pthread_create(&args->tid, NULL, test_main, args);
             if (rc) {
@@ -798,7 +779,7 @@ main(int argc, char **argv)
         calls_total = 0;
 
         for (args = args_head; args; args = args->next) {
-            struct stats *stats = args->stats;
+            struct subr_stats *stats = args->stats;
             double cycles;
             void *res;
 
@@ -808,7 +789,7 @@ main(int argc, char **argv)
                 continue;
             }
 
-            subr_fini(args->data, test->func);
+            subr_fini(args);
 
             if (args->data->refcnt == 0)
                 free(args->data);
