@@ -134,8 +134,7 @@ struct tdargs {
     size_t           cpu;
     struct test     *test;
     struct stats     stats[2];
-
-    struct testdata testdata __aligned(128);
+    struct tdargs   *next;
 };
 
 struct test testv[] = {
@@ -202,9 +201,13 @@ eprint(int xerrno, const char *fmt, ...)
 }
 
 static void
-cpuset_print(const char *msg, cpuset_t *mask)
+cpuset_print(cpuset_t *mask, const char *fmt, ...)
 {
-    printf("%s: ", msg);
+    va_list ap;
+
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
 
     for (size_t i = 0; i < CPU_SETSIZE; ++i) {
         if (CPU_ISSET(i, mask))
@@ -213,11 +216,26 @@ cpuset_print(const char *msg, cpuset_t *mask)
     printf("\n");
 }
 
+static size_t
+group_find(cpuset_t *groupv, size_t groupc, size_t cpu)
+{
+    size_t i;
+
+    for (i = 0; i < groupc; ++i) {
+        if (CPU_ISSET(cpu, &groupv[i]))
+            break;
+    }
+
+    return i;
+}
+
 static void
 range_decode(const char *str, cpuset_t *mask)
 {
     unsigned long left, right;
     char *end;
+
+    CPU_ZERO(mask);
 
     while (str) {
         while (isspace(*str) || *str == ',')
@@ -300,6 +318,25 @@ itv_stop(void)
 #endif
 }
 
+static void
+setaffinity(cpuset_t *maskp, size_t cpu)
+{
+    cpuset_t mask;
+    int rc;
+
+    if (maskp) {
+        CPU_COPY(maskp, &mask);
+    } else {
+        CPU_ZERO(&mask);
+        CPU_SET(cpu, &mask);
+    }
+
+    rc = pthread_setaffinity_np(pthread_self(), sizeof(&mask), &mask);
+    if (rc) {
+        eprint(rc, "unable to affine thread to CPUs...");
+        abort();
+    }
+}
 
 static void *
 test_main(void *arg)
@@ -310,17 +347,9 @@ test_main(void *arg)
     struct stats *stats;
     struct test *test;
     subr_func *func;
-    cpuset_t nmask;
     int rc;
 
-    CPU_ZERO(&nmask);
-    CPU_SET(args->cpu, &nmask);
-
-    rc = pthread_setaffinity_np(pthread_self(), sizeof(nmask), &nmask);
-    if (rc) {
-        eprint(rc, "unable to affine thread %lu to CPU %zu", args->tid, args->cpu);
-        pthread_exit(NULL);
-    }
+    setaffinity(NULL, args->cpu);
 
     test = args->test;
     func = test->func;
@@ -361,16 +390,13 @@ test_main(void *arg)
         if (stop - start < latmin)
             latmin = stop - start;
 
-        stats->calls += 4;
+        stats->calls++;
     }
 
     stats->stop = itv_stop();
 
     stats->latavg = latavg / stats->calls;
     stats->latmin = latmin;
-
-    latmin = DBL_MAX;
-    latavg = 0;
 
     /* Rendezvous with the leader...
      */
@@ -423,14 +449,15 @@ test_main(void *arg)
 int
 main(int argc, char **argv)
 {
-    cpuset_t avail_mask, test_mask, mask;
-    struct tdargs *tdargsv;
+    cpuset_t groupv[argc], avail_mask, leader_mask, test_mask, mask;
+    struct testdata **datav;
     double cyc_baseline;
     struct test *test;
-    size_t tdargsvsz;
     size_t maxcpuidx;
     int calls_width;
     int name_width;
+    size_t datavsz;
+    size_t groupc;
     int rc;
 
     progname = strrchr(argv[0], '/');
@@ -493,41 +520,49 @@ main(int argc, char **argv)
 
     rc = pthread_getaffinity_np(pthread_self(), sizeof(avail_mask), &avail_mask);
     if (rc) {
-        eprint(rc, "unable to get cpu affinity");
+        eprint(rc, "unable to get thread affinity mask");
         exit(EX_OSERR);
     }
 
     /* Build a mask of CPUs to test.  Each positional parameter may be either
      * a single CPU ID or a range separated by a single dash character.
      */
+    CPU_ZERO(&leader_mask);
+    CPU_ZERO(&test_mask);
     CPU_ZERO(&mask);
-    for (int i = 0; i < posparamv->argc; ++i)
-        range_decode(posparamv->argv[i], &mask);
+    groupc = 0;
 
-    CPU_AND(&test_mask, &avail_mask, &mask);
+    for (int i = 0; i < posparamv->argc; ++i) {
+        range_decode(posparamv->argv[i], &groupv[groupc]);
+
+        CPU_OR(&test_mask, &test_mask, &groupv[groupc]);
+        groupc++;
+    }
+
+    CPU_AND(&test_mask, &test_mask, &avail_mask);
 
     if (CPU_COUNT(&test_mask) < 1) {
-        eprint(EINVAL, "at least one cpu ID must be specified");
+        eprint(EINVAL, "at least one CPU ID must be specified");
         exit(EX_USAGE);
     }
 
-    if (verbosity > 0 || CPU_COUNT(&test_mask) < CPU_COUNT(&mask))
-        cpuset_print("testing cpus", &test_mask);
-
-    /* Try to run the leader thread on any CPU not given on the command line.
+    /* Try to affine the leader thread to any CPU not under test.
      */
-    CPU_XOR(&mask, &avail_mask, &test_mask);
+    CPU_XOR(&leader_mask, &avail_mask, &test_mask);
 
-    if (CPU_COUNT(&mask) > 0) {
-        rc = pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
-        if (rc) {
-            eprint(rc, "unable to set leader cpu affinity");
-        }
+    if (CPU_COUNT(&leader_mask) == 0) {
+        CPU_COPY(&avail_mask, &leader_mask);
     }
 
-    if (verbosity > 0)
-        cpuset_print("leader cpus", &mask);
+    if (verbosity > 0) {
+        cpuset_print(&avail_mask, "avail mask:");
+        cpuset_print(&leader_mask, "leader mask:");
+        cpuset_print(&test_mask, "test mask:");
 
+        for (size_t i = 0; i < groupc; ++i) {
+            cpuset_print(&groupv[i], "group %zu mask:", i);
+        }
+    }
 
 #if USE_CLOCK
     tsc_freq = 1000000000; /* using clock_gettime() for interval measurements */
@@ -578,11 +613,11 @@ main(int argc, char **argv)
             break;
     }
 
-    tdargsvsz = sizeof(*tdargsv) * (maxcpuidx + 1);
+    datavsz = sizeof(*datav) * (maxcpuidx + 1);
 
-    tdargsv = aligned_alloc(4096, roundup(tdargsvsz, 4096));
-    if (!tdargsv) {
-        eprint(errno, "unable to alloc thread args");
+    datav = aligned_alloc(4096, roundup(datavsz, 4096));
+    if (!datav) {
+        eprint(errno, "unable to alloc thread data");
         exit(EX_OSERR);
     }
 
@@ -602,51 +637,74 @@ main(int argc, char **argv)
 
     for (test = testv; test->name; ++test) {
         double latavg_total, latmin_total, latavg, latmin;
-        struct testdata *shared_data = NULL;
         uint64_t cyc_start0, cyc_start1;
+        struct tdargs *args_head, **args_nextpp, *args;
         uint64_t calls_total;
         double cycles_total;
         double cycles_avg;
         char *suspicious;
+        size_t nthreads;
 
         if (!test->matched)
             continue;
 
-        memset(tdargsv, 0, tdargsvsz);
+        memset(datav, 0, datavsz);
         testrunning0 = true;
         testrunning1 = true;
-
-        if (shared && test->shared && !shared_data) {
-            struct tdargs *args = tdargsv + CPU_FFS(&test_mask);
-
-            shared_data = &args->testdata;
-            atomic_store(&shared_data->refcnt, 0);
-            shared_data->cpumax = CPU_COUNT(&test_mask);
-        }
+        nthreads = 0;
 
         cyc_start0 = itv_cycles() + tsc_freq;
         cyc_start1 = itv_cycles() + tsc_freq * 5;
 
-        /* Start one test thread for each cpu given on the command line.
+        args_head = NULL;
+        args_nextpp = &args_head;
+
+        /* Start one thread for each CPU specified on the command line.
          */
         for (size_t i = 0; i < CPU_SETSIZE; ++i) {
-            struct tdargs *args = tdargsv + i;
+            struct testdata *data;
+            size_t group, align;
 
             if (!CPU_ISSET(i, &test_mask))
                 continue;
 
+            setaffinity(NULL, i);
+
+            align = __alignof(*args);
+            if (align < 128)
+                align = 128;
+
+            args = aligned_alloc(align, roundup(sizeof(*args), align));
+            if (!args)
+                abort();
+
+            memset(args, 0, sizeof(*args));
             args->cpu = i;
+            args->test = test;
             args->stats[0].start = cyc_start0;
             args->stats[1].start = cyc_start1;
-            args->test = test;
 
-            if (shared_data) {
-                args->data = shared_data;
-            } else {
-                args->data = &args->testdata;
-                atomic_store(&args->data->refcnt, 0);
-                args->data->cpumax = CPU_COUNT(&test_mask);
+            *args_nextpp = args;
+            args_nextpp = &args->next;
+
+            group = shared ? group_find(groupv, groupc, i) : nthreads;
+
+            data = datav[group];
+            if (!data) {
+                align = __alignof(*data);
+                if (align < 128)
+                    align = 128;
+
+                data = aligned_alloc(align, roundup(sizeof(*data), align));
+                if (!data)
+                    abort();
+
+                memset(data, 0, sizeof(*data));
+                datav[group] = data;
             }
+
+            args->data = data;
+            args->data->cpumax = CPU_COUNT(&test_mask);
 
             subr_init(args->data, test->func);
 
@@ -655,7 +713,11 @@ main(int argc, char **argv)
                 eprint(rc, "unable to create pthread %d for cpu %zu", i, args->cpu);
                 exit(EX_OSERR);
             }
+
+            nthreads++;
         }
+
+        setaffinity(&leader_mask, 0);
 
         /* Rendezvous with all test threads...
          */
@@ -709,22 +771,21 @@ main(int argc, char **argv)
         cycles_total = 0;
         calls_total = 0;
 
-        for (size_t i = 0; i < CPU_SETSIZE; ++i) {
-            struct tdargs *args = tdargsv + i;
+        for (args = args_head; args; args = args->next) {
             struct stats *stats = args->stats;
             double cycles;
             void *res;
 
-            if (!CPU_ISSET(i, &test_mask))
-                continue;
-
             rc = pthread_join(args->tid, &res);
             if (rc) {
-                eprint(rc, "unable to join pthread %d for cpu %zu", i, args->cpu);
+                eprint(rc, "unable to join pthread for CPU %zu", args->cpu);
                 continue;
             }
 
             subr_fini(args->data, test->func);
+
+            if (args->data->refcnt == 0)
+                free(args->data);
 
             cycles = stats[1].stop - stats[1].start;
             cycles_total += cycles;
@@ -752,15 +813,15 @@ main(int argc, char **argv)
             }
 
             if (headers) {
-                printf("\n%3s %5s %*s %9s %9s %8s %8s   %7s %7s\n",
+                printf("\n%4s %5s %*s %9s %9s %8s %8s   %7s %7s\n",
                        "", "MHz",
                        calls_width, "total",
                        "avg",
                        "avg/cpu", "avg/cpu", "avg/cpu",
                        "sermin", "sermin");
 
-                printf("%3s %5s %*s %9s %9s %8s %8s   %7s %7s  %-*s  %s\n",
-                       (verbosity > 0) ? "CPU" : "-",
+                printf("%4s %5s %*s %9s %9s %8s %8s   %7s %7s  %-*s  %s\n",
+                       "CPU",
                        (USE_CLOCK) ? "CLK" : "TSC",
                        calls_width, "MCALLS",
                        "MCALLS/s",
@@ -774,8 +835,8 @@ main(int argc, char **argv)
                 headers = false;
             }
 
-            if (verbosity > 0) {
-                printf("%3zu %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf%s%7.2lf  %-*s  %s\n",
+            if (verbosity > 1) {
+                printf("%4zu %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf%s%7.2lf  %-*s  %s\n",
                        args->cpu,
                        tsc_freq / 1000000,
                        calls_width, (stats[1].calls / 1000000.0),
@@ -794,7 +855,7 @@ main(int argc, char **argv)
         latavg = latavg_total / CPU_COUNT(&test_mask);
         latmin = latmin_total;
 
-        printf("%3s %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
+        printf("%4s %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
                "-",
                tsc_freq / 1000000,
                calls_width, (calls_total / 1000000.0),
@@ -809,10 +870,15 @@ main(int argc, char **argv)
 
         if (!cyc_baseline)
             cyc_baseline = latmin;
+
+        while (( args = args_head )) {
+            args_head = args->next;
+            free(args);
+        }
     }
 
     free(teststr);
-    free(tdargsv);
+    free(datav);
 
     return 0;
 }
