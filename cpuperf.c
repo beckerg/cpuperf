@@ -79,7 +79,7 @@ typedef cpu_set_t cpuset_t;
 char version[] = PROG_VERSION;
 bool headers, shared, testlist;
 int verbosity;
-uint64_t tsc_freq;
+uint64_t tsc_freq, seed;
 time_t duration;
 char *progname;
 char *teststr;
@@ -100,6 +100,7 @@ struct clp_option optionv[] = {
     CLP_OPTION('f', uint64_t,  tsc_freq, NULL, "specify TSC frequency"),
 #endif
     CLP_OPTION('H',     bool,   headers, NULL, "suppress headers"),
+    CLP_OPTION('S', uint64_t,      seed, NULL, "specify initial PRNG seed"),
     CLP_OPTION('s',     bool,    shared, NULL, "run shared tests"),
     CLP_OPTION('t',   string,   teststr, NULL, "specify tests to run"),
 
@@ -273,11 +274,55 @@ range_decode(const char *str, cpuset_t *mask)
     }
 }
 
+/* Interval timer abstractions...
+ */
+struct itv {
+#if HAVE_RDTSCP && !USE_CLOCK
+    uint64_t        start;
+#else
+    struct timespec start;
+#endif
+};
 
-/* Time interval measurement abstractions...
+/* Record the start time of an interval timer (serialized).
+ */
+static void
+itv_start(struct itv *itv)
+{
+#if HAVE_RDTSCP && !USE_CLOCK
+    uint aux;
+
+    itv->start = __rdtscp(&aux);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &itv->start);
+#endif
+}
+
+/* Return the delta between now and a previously recorded
+ * interval start time (serialized).
  */
 static inline uint64_t
-itv_cycles(void)
+itv_stop(struct itv *itv)
+{
+#if HAVE_RDTSCP && !USE_CLOCK
+    uint aux;
+
+    return __rdtscp(&aux) - itv->start;
+#else
+    struct timespec *start = &itv->start;
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    return (now.tv_sec * 1000000000 + now.tv_nsec) -
+        (start->tv_sec * 1000000000 + start->tv_nsec);
+#endif
+}
+
+/* Return the current time (unserialized).
+ */
+static inline uint64_t
+itv_now(void)
 {
 #if HAVE_RDTSC && !USE_CLOCK
     return __rdtsc();
@@ -287,28 +332,6 @@ itv_cycles(void)
     clock_gettime(CLOCK_MONOTONIC, &now);
 
     return (now.tv_sec * 1000000000) + now.tv_nsec;
-#endif
-}
-
-static inline uint64_t
-itv_start(void)
-{
-#if HAVE_RDTSC && !USE_CLOCK
-    __asm__ volatile ("cpuid" ::: "eax","ebx","ecx","edx","memory");
-#endif
-
-    return itv_cycles();
-}
-
-static inline uint64_t
-itv_stop(void)
-{
-#if HAVE_RDTSCP && !USE_CLOCK
-    uint aux;
-
-    return __rdtscp(&aux);
-#else
-    return itv_cycles();
 #endif
 }
 
@@ -354,7 +377,9 @@ test_main(void *arg)
 {
     struct subr_args *args = arg;
     struct subr_stats *stats;
+    struct itv test_start;
     double latmin, latavg;
+    double itv_latmin;
     subr_func *func;
     int rc;
 
@@ -373,35 +398,65 @@ test_main(void *arg)
 
     /* Spin here to synchronize with all test threads and maybe kick in turbo boost...
      */
-    while (itv_cycles() < stats->start)
+    while (itv_now() < stats->delta)
         cpu_pause();
 
-    stats->start = itv_start();
-
+    itv_latmin = DBL_MAX;
     latmin = DBL_MAX;
     latavg = 0;
 
-    /* First, we repeatedly measure the time for a single call to the test
-     * function to try and determine it's minimum serialized latency.
+    itv_start(&test_start);
+
+    /* Repeatedly measure the time for a single call to the test
+     * function to try and determine its minimum serialized latency.
      */
     while (testrunning0) {
-        uint64_t start, stop;
+        struct itv start;
+        uint64_t delta;
 
-        start = itv_start();
+        /* First, try to measure the interval timer overhead.
+         */
+        itv_start(&start);
+        delta = itv_stop(&start);
+
+        if (delta < itv_latmin)
+            itv_latmin = delta;
+
+        /* Repeat with a single call to the test function.
+         */
+        itv_start(&start);
         func(args);
-        stop = itv_stop();
+        delta = itv_stop(&start);
 
-        latavg += stop - start;
-        if (stop - start < latmin)
-            latmin = stop - start;
+        if (delta < latmin)
+            latmin = delta;
+        latavg += delta;
 
         stats->calls++;
     }
 
-    stats->stop = itv_stop();
+    stats->delta = itv_stop(&test_start);
 
     stats->latavg = latavg / stats->calls;
     stats->latmin = latmin;
+
+    if (stats->latavg < itv_latmin || stats->latmin < itv_latmin) {
+        printf("itvlatmin %.2lf, latmin %.2lf, latavg %.2lf\n",
+               itv_latmin, stats->latmin, stats->latavg);
+    }
+
+    /* Subtract the interval timer overhead to yield the serialized
+     * average and minimum latencies of the call to the test function.
+     */
+    if (stats->latavg >= itv_latmin)
+        stats->latavg -= itv_latmin;
+    else
+        stats->latavg = 0;
+
+    if (stats->latmin >= itv_latmin)
+        stats->latmin -= itv_latmin;
+    else
+        stats->latmin = 0;
 
     /* Rendezvous with the leader...
      */
@@ -417,12 +472,12 @@ test_main(void *arg)
 
     /* Spin here to synchronize with all test threads and maybe kick in turbo boost...
      */
-    while (itv_cycles() < stats->start)
+    while (itv_now() < stats->delta)
         cpu_pause();
 
-    stats->start = itv_start();
+    itv_start(&test_start);
 
-    /* Next, we repeatedly call the test function with minimal loop
+    /* Here we repeatedly call the test function with minimal loop
      * overhead to try and determine the maximum throughput (i.e.,
      * the minimum unserialized latency).
      */
@@ -435,9 +490,9 @@ test_main(void *arg)
         stats->calls += 4;
     }
 
-    stats->stop = itv_stop();
+    stats->delta = itv_stop(&test_start);
 
-    stats->latavg = (double)(stats->stop - stats->start) / stats->calls;
+    stats->latavg = (double)stats->delta / stats->calls;
     stats->latmin = stats->latavg;
 
     /* Rendezvous with the leader...
@@ -626,11 +681,6 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
-    if (duration < 1)
-        duration = 1;
-    cyc_baseline = 0;
-    calls_width = 0;
-
     rc = pthread_barrier_init(&barrier, NULL, CPU_COUNT(&test_mask) + 1);
     if (rc) {
         eprint(errno, "unable to initialize barrier");
@@ -639,6 +689,14 @@ main(int argc, char **argv)
 
     if (setpriority(PRIO_PROCESS, 0, -20) && verbosity > 0)
         eprint(0, "run as root to reduce jitter");
+
+    if (duration < 1)
+        duration = 1;
+    cyc_baseline = 0;
+    calls_width = 0;
+
+    if (seed == 0)
+        seed = itv_now();
 
     for (test = testv; test->name; ++test) {
         struct subr_args *args_head, **args_nextpp, *args;
@@ -658,8 +716,8 @@ main(int argc, char **argv)
         testrunning1 = true;
         nthreads = 0;
 
-        cyc_start0 = itv_cycles() + tsc_freq;
-        cyc_start1 = itv_cycles() + tsc_freq * 5;
+        cyc_start0 = itv_now() + tsc_freq;
+        cyc_start1 = itv_now() + tsc_freq * 5;
 
         args_head = NULL;
         args_nextpp = &args_head;
@@ -687,10 +745,11 @@ main(int argc, char **argv)
                 abort();
 
             memset(args, 0, sizeof(*args));
-            args->cpu = i;
+            args->stats[0].delta = cyc_start0;
+            args->stats[1].delta = cyc_start1;
             args->func = test->func;
-            args->stats[0].start = cyc_start0;
-            args->stats[1].start = cyc_start1;
+            args->seed = seed + i;
+            args->cpu = i;
 
             /* Append to the end of the list of args objects.
              */
@@ -744,7 +803,7 @@ main(int argc, char **argv)
 
         /* Spin here to synchronize with all test threads...
          */
-        while (itv_cycles() < cyc_start0)
+        while (itv_now() < cyc_start0)
             cpu_pause();
 
         /* The first test loop obtains the minimum serialized latency
@@ -763,7 +822,7 @@ main(int argc, char **argv)
 
         /* Spin here to synchronize with all test threads...
          */
-        while (itv_cycles() < cyc_start1)
+        while (itv_now() < cyc_start1)
             cpu_pause();
 
         /* The second test loop obtains the maximum throughput and runs
@@ -802,7 +861,7 @@ main(int argc, char **argv)
             if (args->data->refcnt == 0)
                 free(args->data);
 
-            cycles = stats[1].stop - stats[1].start;
+            cycles = stats[1].delta;
             cycles_total += cycles;
 
             latavg = stats[1].latavg;

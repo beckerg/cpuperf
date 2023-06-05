@@ -604,7 +604,7 @@ subr_init(struct subr_args *args)
         return 0;
 
     if (func == subr_xoroshiro) {
-        xoroshiro128plus_init(data->prng.state, 0);
+        xoroshiro128plus_init(data->prng.state, args->seed);
     }
     else if (func == subr_ticket) {
         atomic_store(&data->ticket.head, 0);

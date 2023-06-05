@@ -113,19 +113,19 @@ struct subr_args;
 typedef uintptr_t subr_func(struct subr_args *);
 
 struct subr_stats {
-    uint64_t    start;
-    uint64_t    stop;
+    uint64_t    calls;
+    uint64_t    delta;
     double      latmin;
     double      latavg;
-    uint64_t    calls;
 };
 
 struct subr_args {
     struct subr_data  *data;
+    struct subr_stats  stats[2];
     subr_func         *func;
+    uint64_t           seed;
     pthread_t          tid;
     size_t             cpu;
-    struct subr_stats  stats[2];
     struct subr_args  *next;
 };
 
