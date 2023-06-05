@@ -75,13 +75,13 @@
                                             memory_order_release, memory_order_relaxed)
 
 uintptr_t
-subr_baseline(struct subr_data *data __unused)
+subr_baseline(struct subr_args *args __unused)
 {
     return 0;
 }
 
 uintptr_t
-subr_inc_tls(struct subr_data *data __unused)
+subr_inc_tls(struct subr_args *args __unused)
 {
     static __thread uint64_t tls;
 
@@ -89,20 +89,24 @@ subr_inc_tls(struct subr_data *data __unused)
 }
 
 uintptr_t
-subr_inc_atomic(struct subr_data *data)
+subr_inc_atomic(struct subr_args *args)
 {
-    return atomic_fetch_add_explicit(&data->inc.cnt, 1, memory_order_relaxed);
+    struct subr_inc *inc = &args->data->inc;
+
+    return atomic_fetch_add_explicit(&inc->cnt, 1, memory_order_relaxed);
 }
 
 uintptr_t
-subr_inc_atomic_cst(struct subr_data *data)
+subr_inc_atomic_cst(struct subr_args *args)
 {
-    return atomic_fetch_add_explicit(&data->inc.cnt, 1, memory_order_seq_cst);
+    struct subr_inc *inc = &args->data->inc;
+
+    return atomic_fetch_add_explicit(&inc->cnt, 1, memory_order_seq_cst);
 }
 
 #if HAVE_RDTSC
 uintptr_t
-subr_rdtsc(struct subr_data *data __unused)
+subr_rdtsc(struct subr_args *args __unused)
 {
     return _rdtsc();
 }
@@ -110,15 +114,17 @@ subr_rdtsc(struct subr_data *data __unused)
 
 #if HAVE_RDTSCP
 uintptr_t
-subr_rdtscp(struct subr_data *data __unused)
+subr_rdtscp(struct subr_args *args __unused)
 {
-    return __rdtscp(&data->tsc.aux);
+    struct subr_tsc *tsc = &args->data->tsc;
+
+    return __rdtscp(&tsc->aux);
 }
 #endif
 
 #if HAVE_RDRAND64
 uintptr_t
-subr_rdrand64(struct subr_data *data __unused)
+subr_rdrand64(struct subr_args *args __unused)
 {
     unsigned long long val;
 
@@ -131,7 +137,7 @@ subr_rdrand64(struct subr_data *data __unused)
 
 #ifdef __RDPID__
 uintptr_t
-subr_rdpid(struct subr_data *data __unused)
+subr_rdpid(struct subr_args *args __unused)
 {
     return _rdpid_u32() & 0xfff;
 }
@@ -139,7 +145,7 @@ subr_rdpid(struct subr_data *data __unused)
 
 #if __amd64__
 uintptr_t
-subr_cpuid(struct subr_data *data __unused)
+subr_cpuid(struct subr_args *args __unused)
 {
     __asm__ volatile ("cpuid" ::: "eax","ebx","ecx","edx","memory");
 
@@ -147,7 +153,7 @@ subr_cpuid(struct subr_data *data __unused)
 }
 
 uintptr_t
-subr_lsl(struct subr_data *data __unused)
+subr_lsl(struct subr_args *args __unused)
 {
     uint cpu;
 
@@ -157,7 +163,7 @@ subr_lsl(struct subr_data *data __unused)
 }
 
 uintptr_t
-subr_lfence(struct subr_data *data __unused)
+subr_lfence(struct subr_args *args __unused)
 {
     _mm_lfence();
 
@@ -165,7 +171,7 @@ subr_lfence(struct subr_data *data __unused)
 }
 
 uintptr_t
-subr_sfence(struct subr_data *data __unused)
+subr_sfence(struct subr_args *args __unused)
 {
     _mm_sfence();
 
@@ -173,7 +179,7 @@ subr_sfence(struct subr_data *data __unused)
 }
 
 uintptr_t
-subr_mfence(struct subr_data *data __unused)
+subr_mfence(struct subr_args *args __unused)
 {
     _mm_mfence();
 
@@ -181,7 +187,7 @@ subr_mfence(struct subr_data *data __unused)
 }
 
 uintptr_t
-subr_pause(struct subr_data *data __unused)
+subr_pause(struct subr_args *args __unused)
 {
     _mm_pause();
 
@@ -192,37 +198,83 @@ subr_pause(struct subr_data *data __unused)
 
 #if __linux__
 uintptr_t
-subr_sched_getcpu(struct subr_data *data __unused)
+subr_sched_getcpu(struct subr_args *args __unused)
 {
     return sched_getcpu();
 }
 #endif
 
 uintptr_t
-subr_xoroshiro(struct subr_data *data)
+subr_xoroshiro(struct subr_args *args)
 {
-    return xoroshiro128plus(data->prng.state);
+    struct subr_prng *prng = &args->data->prng;
+
+    return xoroshiro128plus(prng->state);
 }
 
 uintptr_t
-subr_mod127(struct subr_data *data)
+subr_mod127(struct subr_args *args)
 {
-    return xoroshiro128plus(data->prng.state) % 127;
+    struct subr_prng *prng = &args->data->prng;
+
+    return xoroshiro128plus(prng->state) % 127;
 }
 
 uintptr_t
-subr_mod128(struct subr_data *data)
+subr_mod128(struct subr_args *args)
 {
-    return xoroshiro128plus(data->prng.state) % 128;
+    struct subr_prng *prng = &args->data->prng;
+
+    return xoroshiro128plus(prng->state) % 128;
 }
 
+#ifdef CLOCK_REALTIME
 uintptr_t
-subr_clock(struct subr_data *data)
+subr_clock_real(struct subr_args *args)
 {
-    clock_gettime(CLOCK_MONOTONIC, &data->clock.ts);
+    struct subr_clock *clock = &args->data->clock;
 
-    return data->clock.ts.tv_sec;
+    clock_gettime(CLOCK_REALTIME, &clock->ts);
+
+    return (clock->ts.tv_sec * 1000000000) + clock->ts.tv_nsec;
 }
+#endif
+
+#ifdef CLOCK_REALTIME_COARSE
+uintptr_t
+subr_clock_realfast(struct subr_args *args)
+{
+    struct subr_clock *clock = &args->data->clock;
+
+    clock_gettime(CLOCK_REALTIME_COARSE, &clock->ts);
+
+    return (clock->ts.tv_sec * 1000000000) + clock->ts.tv_nsec;
+}
+#endif
+
+#ifdef CLOCK_MONOTONIC
+uintptr_t
+subr_clock_mono(struct subr_args *args)
+{
+    struct subr_clock *clock = &args->data->clock;
+
+    clock_gettime(CLOCK_MONOTONIC, &clock->ts);
+
+    return (clock->ts.tv_sec * 1000000000) + clock->ts.tv_nsec;
+}
+#endif
+
+#ifdef CLOCK_MONOTONIC_COARSE
+uintptr_t
+subr_clock_monofast(struct subr_args *args)
+{
+    struct subr_clock *clock = &args->data->clock;
+
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &clock->ts);
+
+    return (clock->ts.tv_sec * 1000000000) + clock->ts.tv_nsec;
+}
+#endif
 
 static inline void
 subr_cmpxchg_lock(atomic_int *ptr)
@@ -243,69 +295,81 @@ subr_cmpxchg_unlock(atomic_int *ptr)
 }
 
 uintptr_t
-subr_spin_cmpxchg(struct subr_data *data)
+subr_spin_cmpxchg(struct subr_args *args)
 {
-    subr_cmpxchg_lock(&data->spin_cmpxchg.lock);
-    data->spin_cmpxchg.cnt++;
-    subr_cmpxchg_unlock(&data->spin_cmpxchg.lock);
+    struct subr_spin_cmpxchg *spin = &args->data->spin_cmpxchg;
+
+    subr_cmpxchg_lock(&spin->lock);
+    spin->cnt++;
+    subr_cmpxchg_unlock(&spin->lock);
 
     return 0;
 }
 
 uintptr_t
-subr_spin_pthread(struct subr_data *data)
+subr_spin_pthread(struct subr_args *args)
 {
-    pthread_spin_lock(&data->spin_pthread.lock);
-    data->spin_pthread.cnt++;
-    pthread_spin_unlock(&data->spin_pthread.lock);
+    struct subr_spin_pthread *spin = &args->data->spin_pthread;
+
+    pthread_spin_lock(&spin->lock);
+    spin->cnt++;
+    pthread_spin_unlock(&spin->lock);
 
     return 0;
 }
 
 uintptr_t
-subr_mutex_pthread(struct subr_data *data)
+subr_mutex_pthread(struct subr_args *args)
 {
-    pthread_mutex_lock(&data->mutex_pthread.lock);
-    data->mutex_pthread.cnt++;
-    pthread_mutex_unlock(&data->mutex_pthread.lock);
+    struct subr_mutex_pthread *mtx = &args->data->mutex_pthread;
+
+    pthread_mutex_lock(&mtx->lock);
+    mtx->cnt++;
+    pthread_mutex_unlock(&mtx->lock);
 
     return 0;
 }
 
 uintptr_t
-subr_mutex_sema(struct subr_data *data)
+subr_mutex_sema(struct subr_args *args)
 {
-    while (sem_wait(&data->mutex_sema.lock))
+    struct subr_mutex_sema *mtx = &args->data->mutex_sema;
+
+    while (sem_wait(&mtx->lock))
         continue;
 
-    data->mutex_sema.cnt++;
-    sem_post(&data->mutex_sema.lock);
+    mtx->cnt++;
+    sem_post(&mtx->lock);
 
     return 0;
 }
 
 uintptr_t
-subr_rwlock_wrlock(struct subr_data *data)
+subr_rwlock_wrlock(struct subr_args *args)
 {
-    pthread_rwlock_wrlock(&data->mutex_rwlock.lock);
-    data->mutex_rwlock.cnt++;
-    pthread_rwlock_unlock(&data->mutex_rwlock.lock);
+    struct subr_mutex_rwlock *mtx = &args->data->mutex_rwlock;
+
+    pthread_rwlock_wrlock(&mtx->lock);
+    mtx->cnt++;
+    pthread_rwlock_unlock(&mtx->lock);
 
     return 0;
 }
 
 uintptr_t
-subr_rwlock_rdlock(struct subr_data *data)
+subr_rwlock_rdlock(struct subr_args *args)
 {
-    pthread_rwlock_rdlock(&data->mutex_rwlock.lock);
-    data->mutex_rwlock.cnt++;
-    pthread_rwlock_unlock(&data->mutex_rwlock.lock);
+    struct subr_mutex_rwlock *mtx = &args->data->mutex_rwlock;
+
+    pthread_rwlock_rdlock(&mtx->lock);
+    mtx->cnt++;
+    pthread_rwlock_unlock(&mtx->lock);
 
     return 0;
 }
 
 static inline void
-subr_ticket_lock(struct ticket *ticket)
+subr_ticket_lock(struct subr_ticket *ticket)
 {
     uint64_t head;
 
@@ -319,15 +383,15 @@ subr_ticket_lock(struct ticket *ticket)
 }
 
 static inline void
-subr_ticket_unlock(struct ticket *ticket)
+subr_ticket_unlock(struct subr_ticket *ticket)
 {
     atomic_inc_rel(&ticket->tail);
 }
 
 uintptr_t
-subr_ticket(struct subr_data *data)
+subr_ticket(struct subr_args *args)
 {
-    struct ticket *ticket = &data->ticket;
+    struct subr_ticket *ticket = &args->data->ticket;
 
     subr_ticket_lock(ticket);
     ticket->cnt++;
@@ -337,12 +401,14 @@ subr_ticket(struct subr_data *data)
 }
 
 uintptr_t
-subr_sema(struct subr_data *data)
+subr_sema(struct subr_args *args)
 {
-    while (sem_wait(&data->sema.sema))
+    struct subr_sema *sema = &args->data->sema;
+
+    while (sem_wait(&sema->sema))
         continue;
 
-    sem_post(&data->sema.sema);
+    sem_post(&sema->sema);
 
     return 0;
 }
@@ -353,37 +419,38 @@ subr_sema(struct subr_data *data)
  * user data structure.
  */
 static int
-subr_stack_lockfree_init(struct subr_data *data)
+subr_stack_lockfree_init(struct subr_args *args)
 {
+    struct subr_stack_lockfree *stack = &args->data->stack_lockfree;
     struct lfstack *lfstack;
-    int nelem = data->cpumax;
+    size_t nelem = args->data->cpumax;
     void *mem;
-    int i;
 
     lfstack = lfstack_create(nelem);
     if (!lfstack)
         return ENOMEM;
 
-    for (i = 0; i < nelem; ++i) {
+    for (size_t i = 0; i < nelem; ++i) {
         mem = aligned_alloc(128, 128);
         if (mem)
             lfstack_push(lfstack, mem);
     }
 
-    data->lfstack.lfstack = lfstack;
+    stack->lfstack = lfstack;
 
     return 0;
 }
 
 uintptr_t
-subr_stack_lockfree(struct subr_data *data)
+subr_stack_lockfree(struct subr_args *args)
 {
+    struct subr_stack_lockfree *stack = &args->data->stack_lockfree;
     void *item;
 
-    item = lfstack_pop(data->lfstack.lfstack);
+    item = lfstack_pop(stack->lfstack);
     if (item) {
         *(long *)item += 1;
-        lfstack_push(data->lfstack.lfstack, item);
+        lfstack_push(stack->lfstack, item);
     }
 
     return 0;
@@ -401,12 +468,12 @@ struct stack_node {
 };
 
 static int
-subr_stack_mutex_init(struct subr_data *data)
+subr_stack_mutex_init(struct subr_args *args)
 {
-    struct stack_mutex *stack = &data->stack_mutex;
+    struct subr_stack_mutex *stack = &args->data->stack_mutex;
+    size_t nelem = args->data->cpumax;
     struct stack_node *node;
-    int nelem = data->cpumax;
-    int rc, i;
+    int rc;
 
     rc = pthread_mutex_init(&stack->lock, NULL);
     if (rc)
@@ -414,7 +481,7 @@ subr_stack_mutex_init(struct subr_data *data)
 
     stack->head = NULL;
 
-    for (i = 0; i < nelem; ++i) {
+    for (size_t i = 0; i < nelem; ++i) {
         node = aligned_alloc(128, 128);
         if (node) {
             node->cnt = 0;
@@ -427,7 +494,7 @@ subr_stack_mutex_init(struct subr_data *data)
 }
 
 static void
-subr_stack_mutex_push(struct stack_mutex *stack, struct stack_node *node)
+subr_stack_mutex_push(struct subr_stack_mutex *stack, struct stack_node *node)
 {
     pthread_mutex_lock(&stack->lock);
     node->next = stack->head;
@@ -436,7 +503,7 @@ subr_stack_mutex_push(struct stack_mutex *stack, struct stack_node *node)
 }
 
 static struct stack_node *
-subr_stack_mutex_pop(struct stack_mutex *stack)
+subr_stack_mutex_pop(struct subr_stack_mutex *stack)
 {
     struct stack_node *node;
 
@@ -450,9 +517,9 @@ subr_stack_mutex_pop(struct stack_mutex *stack)
 }
 
 uintptr_t
-subr_stack_mutex(struct subr_data *data)
+subr_stack_mutex(struct subr_args *args)
 {
-    struct stack_mutex *stack = &data->stack_mutex;
+    struct subr_stack_mutex *stack = &args->data->stack_mutex;
     struct stack_node *node;
 
     node = subr_stack_mutex_pop(stack);
@@ -463,12 +530,12 @@ subr_stack_mutex(struct subr_data *data)
 }
 
 static int
-subr_stack_sema_init(struct subr_data *data)
+subr_stack_sema_init(struct subr_args *args)
 {
-    struct stack_sema *stack = &data->stack_sema;
+    struct subr_stack_sema *stack = &args->data->stack_sema;
+    size_t nelem = args->data->cpumax;
     struct stack_node *node;
-    int nelem = data->cpumax;
-    int rc, i;
+    int rc;
 
     rc = sem_init(&stack->lock, 0, 1);
     if (rc)
@@ -476,7 +543,7 @@ subr_stack_sema_init(struct subr_data *data)
 
     stack->head = NULL;
 
-    for (i = 0; i < nelem; ++i) {
+    for (size_t i = 0; i < nelem; ++i) {
         node = aligned_alloc(128, 128);
         if (node) {
             node->cnt = 0;
@@ -489,7 +556,7 @@ subr_stack_sema_init(struct subr_data *data)
 }
 
 static void
-subr_stack_sema_push(struct stack_sema *stack, struct stack_node *node)
+subr_stack_sema_push(struct subr_stack_sema *stack, struct stack_node *node)
 {
     while (sem_wait(&stack->lock))
         continue;
@@ -499,7 +566,7 @@ subr_stack_sema_push(struct stack_sema *stack, struct stack_node *node)
 }
 
 static struct stack_node *
-subr_stack_sema_pop(struct stack_sema *stack)
+subr_stack_sema_pop(struct subr_stack_sema *stack)
 {
     struct stack_node *node;
 
@@ -514,9 +581,9 @@ subr_stack_sema_pop(struct stack_sema *stack)
 }
 
 uintptr_t
-subr_stack_sema(struct subr_data *data)
+subr_stack_sema(struct subr_args *args)
 {
-    struct stack_sema *stack = &data->stack_sema;
+    struct subr_stack_sema *stack = &args->data->stack_sema;
     struct stack_node *node;
 
     node = subr_stack_sema_pop(stack);
@@ -565,13 +632,13 @@ subr_init(struct subr_args *args)
         rc = sem_init(&data->sema.sema, 0, data->cpumax);
     }
     else if (func == subr_stack_lockfree) {
-        rc = subr_stack_lockfree_init(data);
+        rc = subr_stack_lockfree_init(args);
     }
     else if (func == subr_stack_mutex) {
-        rc = subr_stack_mutex_init(data);
+        rc = subr_stack_mutex_init(args);
     }
     else if (func == subr_stack_sema) {
-        rc = subr_stack_sema_init(data);
+        rc = subr_stack_sema_init(args);
     }
 
     return rc;
@@ -605,10 +672,10 @@ subr_fini(struct subr_args *args)
         sem_destroy(&data->sema.sema);
     }
     else if (func == subr_stack_lockfree) {
-        lfstack_destroy(data->lfstack.lfstack, free);
+        lfstack_destroy(data->stack_lockfree.lfstack, free);
     }
     else if (func == subr_stack_mutex) {
-        struct stack_mutex *stack = &data->stack_mutex;
+        struct subr_stack_mutex *stack = &data->stack_mutex;
         struct stack_node *node;
 
         while (( node = subr_stack_mutex_pop(stack) )) {
@@ -618,7 +685,7 @@ subr_fini(struct subr_args *args)
         pthread_mutex_destroy(&stack->lock);
     }
     else if (func == subr_stack_sema) {
-        struct stack_sema *stack = &data->stack_sema;
+        struct subr_stack_sema *stack = &data->stack_sema;
         struct stack_node *node;
 
         while (( node = subr_stack_sema_pop(stack) )) {

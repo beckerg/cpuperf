@@ -132,27 +132,38 @@ struct test testv[] = {
     { subr_rdrand64,        0, 0, "cpu-rdrand64",        "64-bit prng" },
 #endif
 #if HAVE_RDTSC
-    { subr_rdtsc,           0, 0, "cpu-rdtsc",           "rdtsc" },
+    { subr_rdtsc,           0, 0, "cpu-rdtsc",           "read time stamp counter" },
 #endif
 #if HAVE_RDTSCP
-    { subr_rdtscp,          0, 0, "cpu-rdtscp",          "rdtsc+rdpid" },
+    { subr_rdtscp,          0, 0, "cpu-rdtscp",          "serialized rdtsc+rdpid" },
 #endif
 #ifdef __RDPID__
-    { subr_rdpid,           0, 0, "cpu-rdpid",           "rdpid" },
+    { subr_rdpid,           0, 0, "cpu-rdpid",           "read processor ID" },
 #endif
 #if __linux__
-    { subr_sched_getcpu,    0, 0, "sys-sched-getcpu",    "rdpid" },
+    { subr_sched_getcpu,    0, 0, "sys-sched-getcpu",    "read processor ID" },
 #endif
 #if __amd64__
-    { subr_lsl,             0, 0, "cpu-lsl",             "rdpid" },
+    { subr_lsl,             0, 0, "cpu-lsl",             "read processor ID" },
 
-    { subr_cpuid,           0, 0, "cpu-cpuid",           "serialize execution" },
+    { subr_cpuid,           0, 0, "cpu-cpuid",           "serialize instruction execution" },
     { subr_lfence,          0, 0, "cpu-lfence",          "serialize mem loads" },
     { subr_sfence,          0, 0, "cpu-sfence",          "serialize mem stores" },
     { subr_mfence,          0, 0, "cpu-mfence",          "serialize mem loads+stores" },
     { subr_pause,           0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
 #endif
-    { subr_clock,           0, 0, "sys-clock-gettime",   "monotonic" },
+#ifdef CLOCK_REALTIME
+    { subr_clock_real,      0, 0, "sys-clock-gettime",   "real time (default)" },
+#endif
+#ifdef CLOCK_REALTIME_COARSE
+    { subr_clock_realfast,  0, 0, "sys-clock-gettime",   "real time (course)" },
+#endif
+#ifdef CLOCK_MONOTONIC
+    { subr_clock_mono,      0, 0, "sys-clock-gettime",   "monotonic time (default)" },
+#endif
+#ifdef CLOCK_MONOTONIC_COARSE
+    { subr_clock_monofast,  0, 0, "sys-clock-gettime",   "monotonic time (course)" },
+#endif
     { subr_rwlock_rdlock,   1, 0, "lock-rwlock-rdlock",  "rdlock+inc+unlock (no writers)" },
     { subr_rwlock_wrlock,   1, 0, "lock-rwlock-wrlock",  "wrlock+inc+unlock (no readers)" },
     { subr_ticket,          1, 0, "lock-ticket",         "lock+inc+unlock" },
@@ -275,7 +286,7 @@ itv_cycles(void)
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
-    return now.tv_sec * 1000000000 + now.tv_nsec;
+    return (now.tv_sec * 1000000000) + now.tv_nsec;
 #endif
 }
 
@@ -300,6 +311,7 @@ itv_stop(void)
     return itv_cycles();
 #endif
 }
+
 
 static void
 affinity_set(cpuset_t *maskp, size_t cpu)
@@ -342,19 +354,11 @@ test_main(void *arg)
 {
     struct subr_args *args = arg;
     struct subr_stats *stats;
-    struct subr_data *data;
     double latmin, latavg;
     subr_func *func;
     int rc;
 
     affinity_check(args->cpu);
-
-    data = args->data;
-    func = args->func;
-    stats = args->stats;
-
-    latmin = DBL_MAX;
-    latavg = 0;
 
     /* Rendezvous with the leader...
      */
@@ -364,12 +368,18 @@ test_main(void *arg)
         pthread_exit(NULL);
     }
 
+    func = args->func;
+    stats = args->stats;
+
     /* Spin here to synchronize with all test threads and maybe kick in turbo boost...
      */
     while (itv_cycles() < stats->start)
         cpu_pause();
 
     stats->start = itv_start();
+
+    latmin = DBL_MAX;
+    latavg = 0;
 
     /* First, we repeatedly measure the time for a single call to the test
      * function to try and determine it's minimum serialized latency.
@@ -378,9 +388,7 @@ test_main(void *arg)
         uint64_t start, stop;
 
         start = itv_start();
-
-        func(data);
-
+        func(args);
         stop = itv_stop();
 
         latavg += stop - start;
@@ -419,17 +427,17 @@ test_main(void *arg)
      * the minimum unserialized latency).
      */
     while (testrunning1) {
-        func(data);
-        func(data);
-        func(data);
-        func(data);
+        func(args);
+        func(args);
+        func(args);
+        func(args);
 
         stats->calls += 4;
     }
 
     stats->stop = itv_stop();
 
-    stats->latavg = (stats->stop - stats->start) / stats->calls;
+    stats->latavg = (double)(stats->stop - stats->start) / stats->calls;
     stats->latmin = stats->latavg;
 
     /* Rendezvous with the leader...

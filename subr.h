@@ -22,94 +22,95 @@
 #define HAVE_RDRAND64       (__has_builtin(__builtin_ia32_rdrand64_step))
 #define HAVE_PAUSE          (__has_builtin(__builtin_ia32_pause))
 
-struct inc {
+struct subr_inc {
     atomic_ullong cnt;
 };
 
-struct clock {
+struct subr_clock {
     struct timespec ts;
 };
 
-struct tsc {
+struct subr_tsc {
     uint aux;
 };
 
-struct prng {
+struct subr_prng {
     uint64_t state[2];
 };
 
-struct mutex_pthread {
+struct subr_mutex_pthread {
     pthread_mutex_t lock;
     uint64_t        cnt;
 };
 
-struct mutex_rwlock {
+struct subr_mutex_rwlock {
     pthread_rwlock_t lock;
     uint64_t         cnt;
 };
 
-struct mutex_sema {
+struct subr_mutex_sema {
     sem_t    lock;
     uint64_t cnt;
 };
 
-struct ticket {
+struct subr_ticket {
     atomic_ullong head;
     atomic_ullong tail __aligned(64);
     uint64_t      cnt;
 };
 
-struct spin_cmpxchg {
+struct subr_spin_cmpxchg {
     atomic_int lock;
     uint64_t   cnt;
 };
 
-struct spin_pthread {
+struct subr_spin_pthread {
     pthread_spinlock_t lock;
     uint64_t           cnt;
 };
 
-struct sema {
+struct subr_sema {
     sem_t sema;
 };
 
-struct stack_lockfree {
+struct subr_stack_lockfree {
     struct lfstack *lfstack;
 };
 
-struct stack_mutex {
+struct subr_stack_mutex {
     pthread_mutex_t  lock;
     void            *head;
 };
 
-struct stack_sema {
+struct subr_stack_sema {
     sem_t            lock;
     void            *head;
 };
 
 struct subr_data {
     union {
-        struct inc              inc;
-        struct clock            clock;
-        struct tsc              tsc;
-        struct prng             prng;
-        struct ticket           ticket;
-        struct spin_cmpxchg     spin_cmpxchg;
-        struct spin_pthread     spin_pthread;
-        struct mutex_pthread    mutex_pthread;
-        struct mutex_rwlock     mutex_rwlock;
-        struct mutex_sema       mutex_sema;
-        struct sema             sema;
-        struct stack_lockfree   lfstack;
-        struct stack_mutex      stack_mutex;
-        struct stack_sema       stack_sema;
+        struct subr_inc              inc;
+        struct subr_clock            clock;
+        struct subr_tsc              tsc;
+        struct subr_prng             prng;
+        struct subr_ticket           ticket;
+        struct subr_spin_cmpxchg     spin_cmpxchg;
+        struct subr_spin_pthread     spin_pthread;
+        struct subr_mutex_pthread    mutex_pthread;
+        struct subr_mutex_rwlock     mutex_rwlock;
+        struct subr_mutex_sema       mutex_sema;
+        struct subr_sema             sema;
+        struct subr_stack_lockfree   stack_lockfree;
+        struct subr_stack_mutex      stack_mutex;
+        struct subr_stack_sema       stack_sema;
     };
 
     atomic_int refcnt;
     uint       cpumax;
 };
 
-typedef uintptr_t subr_func(struct subr_data *);
+struct subr_args;
+typedef uintptr_t subr_func(struct subr_args *);
 
 struct subr_stats {
     uint64_t    start;
@@ -178,7 +179,11 @@ extern subr_func subr_xoroshiro;
 extern subr_func subr_mod127;
 extern subr_func subr_mod128;
 
-extern subr_func subr_clock;
+extern subr_func subr_clock_real;
+extern subr_func subr_clock_realfast;
+
+extern subr_func subr_clock_mono;
+extern subr_func subr_clock_monofast;
 
 extern subr_func subr_rwlock_rdlock;
 extern subr_func subr_rwlock_wrlock;
