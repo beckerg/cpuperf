@@ -292,7 +292,7 @@ itv_start(struct itv *itv)
 #if HAVE_RDTSCP && !USE_CLOCK
     uint aux;
 
-    itv->start = __rdtscp(&aux);
+    itv->start = __builtin_ia32_rdtscp(&aux);
 #else
     clock_gettime(CLOCK_MONOTONIC, &itv->start);
 #endif
@@ -307,7 +307,7 @@ itv_stop(struct itv *itv)
 #if HAVE_RDTSCP && !USE_CLOCK
     uint aux;
 
-    return __rdtscp(&aux) - itv->start;
+    return __builtin_ia32_rdtscp(&aux) - itv->start;
 #else
     struct timespec *start = &itv->start;
     struct timespec now;
@@ -325,7 +325,7 @@ static inline uint64_t
 itv_now(void)
 {
 #if HAVE_RDTSC && !USE_CLOCK
-    return __rdtsc();
+    return __builtin_ia32_rdtsc();
 #else
     struct timespec now;
 

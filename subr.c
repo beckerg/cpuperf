@@ -108,7 +108,7 @@ subr_inc_atomic_cst(struct subr_args *args)
 uintptr_t
 subr_rdtsc(struct subr_args *args __unused)
 {
-    return _rdtsc();
+    return __builtin_ia32_rdtsc();
 }
 #endif
 
@@ -118,7 +118,7 @@ subr_rdtscp(struct subr_args *args __unused)
 {
     struct subr_tsc *tsc = &args->data->tsc;
 
-    return __rdtscp(&tsc->aux);
+    return __builtin_ia32_rdtscp(&tsc->aux);
 }
 #endif
 
@@ -128,7 +128,7 @@ subr_rdrand64(struct subr_args *args __unused)
 {
     unsigned long long val;
 
-    while (!_rdrand64_step(&val))
+    while (!__builtin_ia32_rdrand64_step(&val))
         continue;
 
     return val;

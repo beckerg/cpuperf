@@ -133,7 +133,7 @@ static inline void
 cpu_pause(void)
 {
 #if HAVE_PAUSE
-    _mm_pause();
+    __builtin_ia32_pause();
 #else
     usleep(1);
 #endif
