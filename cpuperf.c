@@ -60,10 +60,13 @@ typedef cpu_set_t cpuset_t;
             break;                              \
     i;                                          \
 })
-#endif
 
-#ifndef __aligned
-#define __aligned(_size)    __attribute__((__aligned__(_size)))
+#define CPU_COPY(_from, _to)                    \
+({                                              \
+    CPU_ZERO(_to);                              \
+    CPU_OR((_to), (_to), (_from));              \
+})
+
 #endif
 
 #include "clp.h"
@@ -122,7 +125,7 @@ struct test {
 };
 
 struct test testv[] = {
-    { subr_baseline,        1, 1, "baseline",            "call empty function" },
+    { subr_baseline,        1, 1, "baseline",            "function call" },
     { subr_inc_tls,         0, 0, "inc-tls",             "inc tls var" },
     { subr_inc_atomic,      1, 0, "inc-atomic",          "inc atomic (relaxed)" },
     { subr_inc_atomic_cst,  1, 0, "inc-atomic-cst",      "inc atomic (seq cst)" },
@@ -668,7 +671,7 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
-    for (maxcpuidx = CPU_SETSIZE - 1; maxcpuidx >= 0; --maxcpuidx) {
+    for (maxcpuidx = CPU_SETSIZE - 1; maxcpuidx > 0; --maxcpuidx) {
         if (CPU_ISSET(maxcpuidx, &test_mask))
             break;
     }

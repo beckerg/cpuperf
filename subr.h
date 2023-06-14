@@ -22,6 +22,11 @@
 #define HAVE_RDRAND64       (__has_builtin(__builtin_ia32_rdrand64_step))
 #define HAVE_PAUSE          (__has_builtin(__builtin_ia32_pause))
 
+#ifndef __aligned
+#define __aligned(_size)    __attribute__((__aligned__(_size)))
+#endif
+
+
 struct subr_inc {
     atomic_ullong cnt;
 };
