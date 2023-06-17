@@ -44,8 +44,8 @@
 
 #if __FreeBSD__
 #include <pthread_np.h>
-#include <sys/cpuset.h>
 #include <sys/sysctl.h>
+#include <sys/cpuset.h>
 #endif
 
 #if __linux__
@@ -66,7 +66,6 @@ typedef cpu_set_t cpuset_t;
     CPU_ZERO(_to);                              \
     CPU_OR((_to), (_to), (_from));              \
 })
-
 #endif
 
 #include "clp.h"
@@ -214,19 +213,6 @@ cpuset_print(cpuset_t *mask, const char *fmt, ...)
     printf("\n");
 }
 
-static size_t
-group_find(cpuset_t *groupv, size_t groupc, size_t cpu)
-{
-    size_t i;
-
-    for (i = 0; i < groupc; ++i) {
-        if (CPU_ISSET(cpu, &groupv[i]))
-            break;
-    }
-
-    return i;
-}
-
 static void
 range_decode(const char *str, cpuset_t *mask)
 {
@@ -340,37 +326,13 @@ itv_now(void)
 
 
 static void
-affinity_set(cpuset_t *maskp, size_t cpu)
+affinity_set(cpuset_t *mask)
 {
-    cpuset_t mask;
     int rc;
 
-    if (maskp) {
-        CPU_COPY(maskp, &mask);
-    } else {
-        CPU_ZERO(&mask);
-        CPU_SET(cpu, &mask);
-    }
-
-    rc = pthread_setaffinity_np(pthread_self(), sizeof(&mask), &mask);
+    rc = pthread_setaffinity_np(pthread_self(), sizeof(*mask), mask);
     if (rc) {
         eprint(rc, "unable to affine thread to CPUs...");
-        abort();
-    }
-}
-
-static void
-affinity_check(size_t cpu)
-{
-    cpuset_t mask;
-    int rc;
-
-    CPU_ZERO(&mask);
-
-    rc = pthread_getaffinity_np(pthread_self(), sizeof(&mask), &mask);
-
-    if (rc || !CPU_ISSET(cpu, &mask) || CPU_COUNT(&mask) != 1) {
-        cpuset_print(&mask, "rc %d, cpu %zu:", rc, cpu);
         abort();
     }
 }
@@ -386,13 +348,11 @@ test_main(void *arg)
     subr_func *func;
     int rc;
 
-    affinity_check(args->cpu);
-
     /* Rendezvous with the leader...
      */
     rc = pthread_barrier_wait(&barrier);
     if (rc > 0) {
-        eprint(rc, "CPU %zu unable to rendezvous with leader", args->cpu);
+        eprint(rc, "thread %zu unable to rendezvous with leader", args->tdnum);
         pthread_exit(NULL);
     }
 
@@ -465,7 +425,7 @@ test_main(void *arg)
      */
     rc = pthread_barrier_wait(&barrier);
     if (rc > 0) {
-        eprint(rc, "CPU %zu unable to rendezvous with leader", args->cpu);
+        eprint(rc, "thread %zu unable to rendezvous with leader", args->tdnum);
         pthread_exit(NULL);
     }
 
@@ -502,7 +462,7 @@ test_main(void *arg)
      */
     rc = pthread_barrier_wait(&barrier);
     if (rc > 0) {
-        eprint(rc, "CPU %zu unable to rendezvous with leader", args->cpu);
+        eprint(rc, "thread %zu unable to rendezvous with leader", args->tdnum);
         pthread_exit(NULL);
     }
 
@@ -513,14 +473,11 @@ int
 main(int argc, char **argv)
 {
     cpuset_t groupv[argc], avail_mask, leader_mask, test_mask, mask;
+    size_t datavsz, groupc, tdmax;
+    int calls_width, name_width;
     struct subr_data **datav;
     double cyc_baseline;
     struct test *test;
-    size_t maxcpuidx;
-    int calls_width;
-    int name_width;
-    size_t datavsz;
-    size_t groupc;
     int rc;
 
     progname = strrchr(argv[0], '/');
@@ -671,12 +628,16 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
-    for (maxcpuidx = CPU_SETSIZE - 1; maxcpuidx > 0; --maxcpuidx) {
-        if (CPU_ISSET(maxcpuidx, &test_mask))
-            break;
+    /* Allocate an array of pointers to keep track of the per-thread
+     * data allocations (one pointer for each thread we're about to
+     * create).
+     */
+    tdmax = 0;
+    for (size_t i = 0; i < groupc; ++i) {
+        tdmax += CPU_COUNT(&groupv[i]);
     }
 
-    datavsz = sizeof(*datav) * (maxcpuidx + 1);
+    datavsz = sizeof(*datav) * (tdmax + 1);
 
     datav = aligned_alloc(4096, roundup(datavsz, 4096));
     if (!datav) {
@@ -709,7 +670,7 @@ main(int argc, char **argv)
         double cycles_total;
         double cycles_avg;
         char *suspicious;
-        size_t nthreads;
+        size_t tdcnt;
 
         if (!test->matched)
             continue;
@@ -717,7 +678,7 @@ main(int argc, char **argv)
         memset(datav, 0, datavsz);
         testrunning0 = true;
         testrunning1 = true;
-        nthreads = 0;
+        tdcnt = 0;
 
         cyc_start0 = itv_now() + tsc_freq;
         cyc_start1 = itv_now() + tsc_freq * 5;
@@ -725,76 +686,86 @@ main(int argc, char **argv)
         args_head = NULL;
         args_nextpp = &args_head;
 
-        /* Start one thread for each CPU specified on the command line.
+        /* Iterate over all the CPU groups specified on the command line,
+         * and start one thread for each CPU listed in each CPU group.
          */
-        for (size_t i = 0; i < CPU_SETSIZE; ++i) {
+        for (size_t tdgrp = 0; tdgrp < groupc; ++tdgrp) {
+            size_t tdpergroup, align;
             struct subr_data *data;
-            size_t group, align;
+            cpuset_t *mask;
 
-            if (!CPU_ISSET(i, &test_mask))
-                continue;
+            mask = groupv + tdgrp;
+            tdpergroup = CPU_COUNT(mask);
 
-            /* Switch to this CPU so that allocation of args and data
-             * come from the local NUMA node.
-             */
-            affinity_set(NULL, i);
+            while (tdpergroup-- > 0) {
+                size_t datagrp = shared ? tdgrp : tdcnt;
 
-            align = __alignof(*args);
-            if (align < 128)
-                align = 128;
+                affinity_set(mask);
 
-            args = aligned_alloc(align, roundup(sizeof(*args), align));
-            if (!args)
-                abort();
-
-            memset(args, 0, sizeof(*args));
-            args->stats[0].delta = cyc_start0;
-            args->stats[1].delta = cyc_start1;
-            args->func = test->func;
-            args->seed = seed + i;
-            args->cpu = i;
-
-            /* Append to the end of the list of args objects.
-             */
-            *args_nextpp = args;
-            args_nextpp = &args->next;
-
-            if (shared) {
-                group = group_find(groupv, groupc, i);
-            } else {
-                group = nthreads;
-            }
-
-            data = datav[group];
-            if (!data) {
-                align = __alignof(*data);
+                align = __alignof(*args);
                 if (align < 128)
                     align = 128;
 
-                data = aligned_alloc(align, roundup(sizeof(*data), align));
-                if (!data)
+                /* Each thread gets its own private args object.
+                 */
+                args = aligned_alloc(align, roundup(sizeof(*args), align));
+                if (!args)
                     abort();
 
-                memset(data, 0, sizeof(*data));
-                data->cpumax = shared ? CPU_COUNT(&groupv[group]) : 1;
+                memset(args, 0, sizeof(*args));
+                args->stats[0].delta = cyc_start0;
+                args->stats[1].delta = cyc_start1;
+                args->func = test->func;
+                args->seed = seed + tdcnt;
+                args->tdnum = tdcnt;
+                args->tdgrp = tdgrp;
 
-                datav[group] = data;
+                /* Append to the end of the list of args objects.
+                 */
+                *args_nextpp = args;
+                args_nextpp = &args->next;
+
+                /* In shared mode we create a single data object per
+                 * CPU group and share it with all threads in that
+                 * group.  In non-shared mode each thread gets its
+                 * own private data object.
+                 */
+                data = datav[datagrp];
+                if (!data) {
+                    align = __alignof(*data);
+                    if (align < 128)
+                        align = 128;
+
+                    data = aligned_alloc(align, roundup(sizeof(*data), align));
+                    if (!data)
+                        abort();
+
+                    memset(data, 0, sizeof(*data));
+                    data->cpumax = shared ? CPU_COUNT(mask) : 1;
+
+                    datav[datagrp] = data;
+                }
+
+                args->data = data;
+
+                subr_init(args);
+
+                rc = pthread_create(&args->tid, NULL, test_main, args);
+                if (rc) {
+                    eprint(rc, "unable to create thread %zu", args->tdnum);
+                    exit(EX_OSERR);
+                }
+
+                tdcnt++;
             }
-
-            args->data = data;
-
-            subr_init(args);
-
-            rc = pthread_create(&args->tid, NULL, test_main, args);
-            if (rc) {
-                eprint(rc, "unable to create pthread for cpu %zu", args->cpu);
-                exit(EX_OSERR);
-            }
-
-            nthreads++;
         }
 
-        affinity_set(&leader_mask, 0);
+        if (tdcnt != tdmax) {
+            printf("td %zu %zu\n", tdcnt, tdmax);
+            abort();
+        }
+
+        affinity_set(&leader_mask);
 
         /* Rendezvous with all test threads...
          */
@@ -855,7 +826,7 @@ main(int argc, char **argv)
 
             rc = pthread_join(args->tid, &res);
             if (rc) {
-                eprint(rc, "unable to join pthread for CPU %zu", args->cpu);
+                eprint(rc, "unable to join thread %zu", args->tdnum);
                 continue;
             }
 
@@ -890,15 +861,15 @@ main(int argc, char **argv)
             }
 
             if (headers) {
-                printf("\n%4s %5s %*s %9s %9s %8s %8s   %7s %7s\n",
-                       "", "MHz",
+                printf("\n%4s %4s %5s %*s %9s %9s %8s %8s   %7s %7s\n",
+                       "", "", "MHz",
                        calls_width, "total",
                        "avg",
                        "avg/cpu", "avg/cpu", "avg/cpu",
                        "sermin", "sermin");
 
-                printf("%4s %5s %*s %9s %9s %8s %8s   %7s %7s  %-*s  %s\n",
-                       "CPU",
+                printf("%4s %4s %5s %*s %9s %9s %8s %8s   %7s %7s  %-*s  %s\n",
+                       "TID", "GRP",
                        (USE_CLOCK) ? "CLK" : "TSC",
                        calls_width, "MCALLS",
                        "MCALLS/s",
@@ -913,8 +884,9 @@ main(int argc, char **argv)
             }
 
             if (verbosity > 1) {
-                printf("%4zu %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf%s%7.2lf  %-*s  %s\n",
-                       args->cpu,
+                printf("%4zu %4zu %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf%s%7.2lf  %-*s  %s\n",
+                       args->tdnum,
+                       args->tdgrp,
                        tsc_freq / 1000000,
                        calls_width, (stats[1].calls / 1000000.0),
                        (stats[1].calls / (cycles / tsc_freq)) / 1000000,
@@ -932,8 +904,8 @@ main(int argc, char **argv)
         latavg = latavg_total / CPU_COUNT(&test_mask);
         latmin = latmin_total;
 
-        printf("%4s %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
-               "-",
+        printf("%4s %4s %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf %7.2lf  %-*s  %s\n",
+               "-", "-",
                tsc_freq / 1000000,
                calls_width, (calls_total / 1000000.0),
                (calls_total / (cycles_avg / tsc_freq)) / 1000000,

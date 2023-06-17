@@ -610,17 +610,33 @@ subr_init(struct subr_args *args)
         atomic_store(&data->ticket.head, 0);
         atomic_store(&data->ticket.tail, 0);
     }
-    else if (func == subr_rwlock_rdlock) {
+    else if (func == subr_rwlock_rdlock ||
+             func == subr_rwlock_wrlock) {
+
         rc = pthread_rwlock_init(&data->mutex_rwlock.lock, NULL);
-    }
-    else if (func == subr_rwlock_wrlock) {
-        rc = pthread_rwlock_init(&data->mutex_rwlock.lock, NULL);
+
+#if __FreeBSD__
+        if (!rc) {
+            // Try to prevent false sharing...
+            data->pad[0] = malloc(36);
+            data->pad[1] = malloc(36);
+        }
+#endif
     }
     else if (func == subr_spin_cmpxchg) {
         atomic_store(&data->spin_cmpxchg.lock, 0);
     }
     else if (func == subr_spin_pthread) {
         rc = pthread_spin_init(&data->spin_pthread.lock, 0);
+
+#if __FreeBSD__
+        if (!rc) {
+            // Try to prevent false sharing...
+            data->pad[0] = malloc(32);
+            data->pad[1] = malloc(32);
+            data->pad[2] = malloc(32);
+        }
+#endif
     }
     else if (func == subr_mutex_pthread) {
         rc = pthread_mutex_init(&data->mutex_pthread.lock, NULL);
@@ -694,4 +710,8 @@ subr_fini(struct subr_args *args)
 
         sem_destroy(&stack->lock);
     }
+
+    free(data->pad[2]);
+    free(data->pad[1]);
+    free(data->pad[0]);
 }

@@ -110,8 +110,9 @@ struct subr_data {
         struct subr_stack_sema       stack_sema;
     };
 
-    atomic_int refcnt;
-    uint       cpumax;
+    atomic_int  refcnt;
+    uint        cpumax;
+    void       *pad[3];
 };
 
 struct subr_args;
@@ -130,7 +131,8 @@ struct subr_args {
     subr_func         *func;
     uint64_t           seed;
     pthread_t          tid;
-    size_t             cpu;
+    size_t             tdnum;
+    size_t             tdgrp;
     struct subr_args  *next;
 };
 
