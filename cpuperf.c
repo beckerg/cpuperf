@@ -86,6 +86,7 @@ time_t duration;
 char *progname;
 char *teststr;
 char *cpustr;
+bool affine;
 
 pthread_barrier_t barrier;
 volatile bool testrunning0;
@@ -97,6 +98,7 @@ struct clp_posparam posparamv[] = {
 };
 
 struct clp_option optionv[] = {
+    CLP_OPTION('a',     bool,    affine, NULL, "affine each thread to one vCPU"),
     CLP_OPTION('d',   time_t,  duration, NULL, "specify max per-test duration (seconds)"),
 #if !USE_CLOCK
     CLP_OPTION('f', uint64_t,  tsc_freq, NULL, "specify TSC frequency"),
@@ -198,7 +200,7 @@ eprint(int xerrno, const char *fmt, ...)
 }
 
 static void
-cpuset_print(cpuset_t *mask, const char *fmt, ...)
+cpuset_print(const cpuset_t *mask, const char *fmt, ...)
 {
     va_list ap;
 
@@ -326,7 +328,7 @@ itv_now(void)
 
 
 static void
-affinity_set(cpuset_t *mask)
+affinity_set(const cpuset_t *mask)
 {
     int rc;
 
@@ -686,21 +688,35 @@ main(int argc, char **argv)
         args_head = NULL;
         args_nextpp = &args_head;
 
-        /* Iterate over all the CPU groups specified on the command line,
-         * and start one thread for each CPU listed in each CPU group.
+        /* Start one thread for each CPU in each thread group.
          */
         for (size_t tdgrp = 0; tdgrp < groupc; ++tdgrp) {
-            size_t tdpergroup, align;
             struct subr_data *data;
-            cpuset_t *mask;
+            const cpuset_t *gmask;
+            size_t align, cpu;
+            cpuset_t gavail;
 
-            mask = groupv + tdgrp;
-            tdpergroup = CPU_COUNT(mask);
+            gmask = groupv + tdgrp;
+            CPU_COPY(gmask, &gavail);
 
-            while (tdpergroup-- > 0) {
+            while (( cpu = CPU_FFS(&gavail) )) {
                 size_t datagrp = shared ? tdgrp : tdcnt;
 
-                affinity_set(mask);
+                CPU_CLR(cpu - 1, &gavail);
+
+                /* If the -a option was given then affine this thread
+                 * to only this one CPU.  Otherwise, affine this thread
+                 * to the set of CPUs given by the current thread group.
+                 */
+                if (affine) {
+                    cpuset_t tmask;
+
+                    CPU_ZERO(&tmask);
+                    CPU_SET(cpu - 1, &tmask);
+                    affinity_set(&tmask);
+                } else {
+                    affinity_set(gmask);
+                }
 
                 align = __alignof(*args);
                 if (align < 128)
@@ -741,7 +757,7 @@ main(int argc, char **argv)
                         abort();
 
                     memset(data, 0, sizeof(*data));
-                    data->cpumax = shared ? CPU_COUNT(mask) : 1;
+                    data->cpumax = shared ? CPU_COUNT(gmask) : 1;
 
                     datav[datagrp] = data;
                 }
