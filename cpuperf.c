@@ -169,16 +169,17 @@ struct test testv[] = {
 #ifdef CLOCK_MONOTONIC_COARSE
     { subr_clock_monofast,  0, 0, "sys-clock-gettime",   "monotonic time (course)" },
 #endif
-    { subr_rwlock_rdlock,   1, 0, "lock-rwlock-rdlock",  "rdlock+inc+unlock (no writers)" },
-    { subr_rwlock_wrlock,   1, 0, "lock-rwlock-wrlock",  "wrlock+inc+unlock (no readers)" },
     { subr_ticket,          1, 0, "lock-ticket",         "lock+inc+unlock" },
     { subr_spin_cmpxchg,    1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
     { subr_spin_pthread,    1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
     { subr_mutex_pthread,   1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
     { subr_mutex_sema,      1, 0, "lock-mutex-sema",     "wait+inc+post (value=1)" },
+    { subr_wrlock_pthread,  1, 0, "lock-wrlock-pthread", "wrlock+inc+unlock (no readers)" },
+    { subr_rdlock_pthread,  1, 0, "lock-rdlock-pthread", "rdlock+inc+unlock (no writers)" },
     { subr_sema,            1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
     { subr_stack_lockfree,  1, 0, "stack-lockfree",      "pop+inc+push" },
     { subr_stack_mutex,     1, 0, "stack-mutex",         "lock+pop+inc+push+unlock" },
+    { subr_stack_wrlock,    1, 0, "stack-wrlock",        "lock+pop+inc+push+unlock" },
     { subr_stack_sema,      1, 0, "stack-sema",          "lock+pop+inc+push+unlock" },
     { NULL, 0, 0, NULL, NULL }
 };
@@ -576,7 +577,7 @@ main(int argc, char **argv)
         CPU_COPY(&avail_mask, &leader_mask);
     }
 
-    if (verbosity > 0) {
+    if (verbosity > 1) {
         cpuset_print(&avail_mask, "avail mask:");
         cpuset_print(&leader_mask, "leader mask:");
         cpuset_print(&test_mask, "test mask:");
@@ -899,7 +900,7 @@ main(int argc, char **argv)
                 headers = false;
             }
 
-            if (verbosity > 1) {
+            if (verbosity > 0) {
                 printf("%4zu %4zu %5lu %*.2lf %9.2lf %9.2lf %8.1lf %8.2lf   %7.1lf%s%7.2lf  %-*s  %s\n",
                        args->tdnum,
                        args->tdgrp,
@@ -930,7 +931,8 @@ main(int argc, char **argv)
                (latavg * 1000000000.0) / tsc_freq,
                latmin,
                (latmin * 1000000000.0) / tsc_freq,
-               name_width, test->name, test->desc);
+               name_width, test->name,
+               (verbosity > 0) ? "(summary)\n" : test->desc);
         fflush(stdout);
 
         if (!cyc_baseline)

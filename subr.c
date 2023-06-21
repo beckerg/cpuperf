@@ -47,6 +47,10 @@
 #include "lfstack.h"
 #include "subr.h"
 
+#ifndef NELEM
+#define NELEM(_vec)         (sizeof(_vec) / sizeof((_vec)[0]))
+#endif
+
 #ifndef __unused
 #define __unused            __attribute__((__unused__))
 #endif
@@ -345,11 +349,11 @@ subr_mutex_sema(struct subr_args *args)
 }
 
 uintptr_t
-subr_rwlock_wrlock(struct subr_args *args)
+subr_rdlock_pthread(struct subr_args *args)
 {
-    struct subr_mutex_rwlock *mtx = &args->data->mutex_rwlock;
+    struct subr_rwlock_pthread *mtx = &args->data->rwlock_pthread;
 
-    pthread_rwlock_wrlock(&mtx->lock);
+    pthread_rwlock_rdlock(&mtx->lock);
     mtx->cnt++;
     pthread_rwlock_unlock(&mtx->lock);
 
@@ -357,11 +361,11 @@ subr_rwlock_wrlock(struct subr_args *args)
 }
 
 uintptr_t
-subr_rwlock_rdlock(struct subr_args *args)
+subr_wrlock_pthread(struct subr_args *args)
 {
-    struct subr_mutex_rwlock *mtx = &args->data->mutex_rwlock;
+    struct subr_rwlock_pthread *mtx = &args->data->rwlock_pthread;
 
-    pthread_rwlock_rdlock(&mtx->lock);
+    pthread_rwlock_wrlock(&mtx->lock);
     mtx->cnt++;
     pthread_rwlock_unlock(&mtx->lock);
 
@@ -530,6 +534,74 @@ subr_stack_mutex(struct subr_args *args)
 }
 
 static int
+subr_stack_wrlock_init(struct subr_args *args)
+{
+    struct subr_stack_wrlock *stack = &args->data->stack_wrlock;
+    size_t nelem = args->data->cpumax;
+    struct stack_node *node;
+    int rc;
+
+    rc = pthread_rwlock_init(&stack->lock, NULL);
+    if (rc)
+        return rc;
+
+#if __FreeBSD__
+    for (size_t i = 0; i < NELEM(stack->padv); ++i) {
+        pthread_rwlock_init(&stack->padv[i], NULL);
+    }
+#endif
+
+    stack->head = NULL;
+
+    for (size_t i = 0; i < nelem; ++i) {
+        node = aligned_alloc(128, 128);
+        if (node) {
+            node->cnt = 0;
+            node->next = stack->head;
+            stack->head = node;
+        }
+    }
+
+    return 0;
+}
+
+static void
+subr_stack_wrlock_push(struct subr_stack_wrlock *stack, struct stack_node *node)
+{
+    pthread_rwlock_wrlock(&stack->lock);
+    node->next = stack->head;
+    stack->head = node;
+    pthread_rwlock_unlock(&stack->lock);
+}
+
+static struct stack_node *
+subr_stack_wrlock_pop(struct subr_stack_wrlock *stack)
+{
+    struct stack_node *node;
+
+    pthread_rwlock_wrlock(&stack->lock);
+    node = stack->head;
+    if (node)
+        stack->head = node->next;
+    pthread_rwlock_unlock(&stack->lock);
+
+    return node;
+}
+
+uintptr_t
+subr_stack_wrlock(struct subr_args *args)
+{
+    struct subr_stack_wrlock *stack = &args->data->stack_wrlock;
+    struct stack_node *node;
+
+    node = subr_stack_wrlock_pop(stack);
+    node->cnt++;
+    subr_stack_wrlock_push(stack, node);
+
+    return 0;
+}
+
+static int
 subr_stack_sema_init(struct subr_args *args)
 {
     struct subr_stack_sema *stack = &args->data->stack_sema;
@@ -610,16 +682,15 @@ subr_init(struct subr_args *args)
         atomic_store(&data->ticket.head, 0);
         atomic_store(&data->ticket.tail, 0);
     }
-    else if (func == subr_rwlock_rdlock ||
-             func == subr_rwlock_wrlock) {
+    else if (func == subr_rdlock_pthread ||
+             func == subr_wrlock_pthread) {
 
-        rc = pthread_rwlock_init(&data->mutex_rwlock.lock, NULL);
+        rc = pthread_rwlock_init(&data->rwlock_pthread.lock, NULL);
 
 #if __FreeBSD__
-        if (!rc) {
-            // Try to prevent false sharing...
-            data->pad[0] = malloc(36);
-            data->pad[1] = malloc(36);
+        // Try to prevent false sharing...
+        for (size_t i = 0; i < NELEM(data->rwlock_pthread.padv); ++i) {
+            pthread_rwlock_init(&data->rwlock_pthread.padv[i], NULL);
         }
 #endif
     }
@@ -630,11 +701,9 @@ subr_init(struct subr_args *args)
         rc = pthread_spin_init(&data->spin_pthread.lock, 0);
 
 #if __FreeBSD__
-        if (!rc) {
-            // Try to prevent false sharing...
-            data->pad[0] = malloc(32);
-            data->pad[1] = malloc(32);
-            data->pad[2] = malloc(32);
+        // Try to prevent false sharing...
+        for (size_t i = 0; i < NELEM(data->rwlock_pthread.padv); ++i) {
+            rc = pthread_spin_init(&data->spin_pthread.padv[i], 0);
         }
 #endif
     }
@@ -653,6 +722,9 @@ subr_init(struct subr_args *args)
     else if (func == subr_stack_mutex) {
         rc = subr_stack_mutex_init(args);
     }
+    else if (func == subr_stack_wrlock) {
+        rc = subr_stack_wrlock_init(args);
+    }
     else if (func == subr_stack_sema) {
         rc = subr_stack_sema_init(args);
     }
@@ -669,13 +741,24 @@ subr_fini(struct subr_args *args)
     if (atomic_dec(&data->refcnt) > 1)
         return;
 
-    if (func == subr_rwlock_rdlock) {
-        pthread_rwlock_destroy(&data->mutex_rwlock.lock);
-    }
-    else if (func == subr_rwlock_wrlock) {
-        pthread_rwlock_destroy(&data->mutex_rwlock.lock);
+    if (func == subr_rdlock_pthread ||
+        func == subr_wrlock_pthread) {
+
+#if __FreeBSD__
+        for (size_t i = 0; i < NELEM(data->rwlock_pthread.padv); ++i) {
+            pthread_rwlock_destroy(&data->rwlock_pthread.padv[i]);
+        }
+#endif
+
+        pthread_rwlock_destroy(&data->rwlock_pthread.lock);
     }
     else if (func == subr_spin_pthread) {
+#if __FreeBSD__
+        for (size_t i = 0; i < NELEM(data->spin_pthread.padv); ++i) {
+            pthread_spin_destroy(&data->spin_pthread.padv[i]);
+        }
+#endif
+
         pthread_spin_destroy(&data->spin_pthread.lock);
     }
     else if (func == subr_mutex_pthread) {
@@ -700,6 +783,22 @@ subr_fini(struct subr_args *args)
 
         pthread_mutex_destroy(&stack->lock);
     }
+    else if (func == subr_stack_wrlock) {
+        struct subr_stack_wrlock *stack = &data->stack_wrlock;
+        struct stack_node *node;
+
+        while (( node = subr_stack_wrlock_pop(stack) )) {
+            free(node);
+        }
+
+#if __FreeBSD__
+        for (size_t i = 0; i < NELEM(stack->padv); ++i) {
+            pthread_rwlock_destroy(&stack->padv[i]);
+        }
+#endif
+
+        pthread_rwlock_destroy(&stack->lock);
+    }
     else if (func == subr_stack_sema) {
         struct subr_stack_sema *stack = &data->stack_sema;
         struct stack_node *node;
@@ -710,8 +809,4 @@ subr_fini(struct subr_args *args)
 
         sem_destroy(&stack->lock);
     }
-
-    free(data->pad[2]);
-    free(data->pad[1]);
-    free(data->pad[0]);
 }
