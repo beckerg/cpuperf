@@ -36,6 +36,7 @@
 #include <sys/param.h>
 #include <sys/resource.h>
 #include <pthread.h>
+#include <regex.h>
 
 #if __has_include(<immintrin.h>)
 #include <immintrin.h>
@@ -55,10 +56,11 @@ typedef cpu_set_t cpuset_t;
 #define CPU_FFS(_cs)                            \
 ({                                              \
     size_t i;                                   \
-    for (i = 0; i < CPU_SETSIZE; ++i)           \
+    for (i = 0; i < CPU_SETSIZE; ++i) {         \
         if (CPU_ISSET(i, (_cs)))                \
             break;                              \
-    i;                                          \
+    }                                           \
+    (i < CPU_SETSIZE) ? (i + 1) : 0;            \
 })
 
 #define CPU_COPY(_from, _to)                    \
@@ -104,12 +106,13 @@ struct clp_option optionv[] = {
     CLP_OPTION('f', uint64_t,  tsc_freq, NULL, "specify TSC frequency"),
 #endif
     CLP_OPTION('H',     bool,   headers, NULL, "suppress headers"),
+
+    CLP_XOPTION('l',    bool,  testlist, "dfH", "list tests",
+                "testlist", NULL, NULL, clp_posparam_none),
+
     CLP_OPTION('S', uint64_t,      seed, NULL, "specify initial PRNG seed"),
     CLP_OPTION('s',     bool,    shared, NULL, "run shared tests"),
-    CLP_OPTION('t',   string,   teststr, NULL, "specify tests to run"),
-
-    CLP_XOPTION('l',    bool,  testlist, "dfHt", "list tests",
-                "testlist", NULL, NULL, clp_posparam_none),
+    CLP_OPTION('t',   string,   teststr, NULL, "specify which tests to run (via a list of extended regexes)"),
 
     CLP_OPTION_VERBOSITY(verbosity),
     CLP_OPTION_VERSION(version),
@@ -497,21 +500,46 @@ main(int argc, char **argv)
     if (clp_given('h', optionv, NULL) || clp_given('V', optionv, NULL))
         return 0;
 
-    /* If user specified a list of tests to run then mark each test
-     * whose name partially matches the given list.
+    /* If user specified one or more an extended regexes of tests to run
+     * then mark each test whose name matches any given regex.
      */
     if (teststr) {
         char *str = teststr, *tok;
 
         while (( tok = strsep(&str, ",:;\t ") )) {
+            char errbuf[256];
+            regex_t regex;
+            bool exclude;
+
+            exclude = (tok[0] == '!');
+            if (exclude)
+                tok++;
+
+            rc = regcomp(&regex, tok, REG_EXTENDED);
+            if (rc) {
+                regerror(rc, &regex, errbuf, sizeof(errbuf));
+                eprint(0, "unable to compile regex %s: %s", tok, errbuf);
+                exit(EX_USAGE);
+            }
+
             for (test = testv; test->name; ++test) {
-                if (!test->matched) {
-                    if (shared && !test->shared)
+                if (shared && !test->shared)
+                    continue;
+
+                rc = regexec(&regex, test->name, 0, NULL, 0);
+                if (rc) {
+                    if (rc == REG_NOMATCH)
                         continue;
 
-                    test->matched = strstr(test->name, tok);
+                    regerror(rc, &regex, errbuf, sizeof(errbuf));
+                    eprint(0, "unable to match regex %s: %s", tok, errbuf);
+                    exit(EX_USAGE);
                 }
+
+                test->matched = !exclude;
             }
+
+            regfree(&regex);
         }
     }
     else {
