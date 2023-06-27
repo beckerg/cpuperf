@@ -18,6 +18,13 @@ CPPFLAGS += -D_GNU_SOURCE
 LDLIBS   += -latomic
 endif
 
+ifeq ($(PLATFORM),freebsd)
+ifeq ($(CC),gcc)
+CFLAGS   += -Wl,-rpath=/usr/local/lib/gcc12
+LDLIBS   += -latomic
+endif
+endif
+
 .DELETE_ON_ERROR:
 .NOTPARALLEL:
 

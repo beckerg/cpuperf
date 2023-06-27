@@ -26,6 +26,10 @@
 #define __aligned(_size)    __attribute__((__aligned__(_size)))
 #endif
 
+#ifndef rounddown
+#define rounddown(x, y)     (((x)/(y))*(y))
+#endif
+
 
 struct subr_inc {
     atomic_ullong cnt;
@@ -51,10 +55,6 @@ struct subr_mutex_pthread {
 struct subr_mutex_wrlock {
     pthread_rwlock_t lock;
     uint64_t         cnt;
-
-#if __FreeBSD__
-    pthread_rwlock_t padv[2];
-#endif
 };
 
 struct subr_mutex_sema {
@@ -65,16 +65,12 @@ struct subr_mutex_sema {
 struct subr_rwlock_pthread {
     pthread_rwlock_t lock;
     uint64_t         cnt;
-
-#if __FreeBSD__
-    pthread_rwlock_t padv[2];
-#endif
 };
 
 struct subr_ticket {
     atomic_ullong head;
-    atomic_ullong tail __aligned(64);
-    uint64_t      cnt;
+    uint64_t      cnt __aligned(64);
+    atomic_ullong tail;
 };
 
 struct subr_spin_cmpxchg {
@@ -85,10 +81,6 @@ struct subr_spin_cmpxchg {
 struct subr_spin_pthread {
     pthread_spinlock_t lock;
     uint64_t           cnt;
-
-#if __FreeBSD__
-    pthread_spinlock_t padv[3];
-#endif
 };
 
 struct subr_sema {
@@ -107,10 +99,6 @@ struct subr_stack_mutex {
 struct subr_stack_wrlock {
     pthread_rwlock_t  lock;
     void             *head;
-
-#if __FreeBSD__
-    pthread_rwlock_t padv[2];
-#endif
 };
 
 struct subr_stack_sema {
@@ -156,6 +144,7 @@ struct subr_args {
     struct subr_data  *data;
     struct subr_stats  stats[2];
     subr_func         *func;
+    uint64_t           options;
     uint64_t           seed;
     pthread_t          tid;
     size_t             tdnum;
@@ -169,7 +158,7 @@ cpu_pause(void)
 #if HAVE_PAUSE
     __builtin_ia32_pause();
 #else
-    usleep(1);
+    pthread_yield();
 #endif
 }
 

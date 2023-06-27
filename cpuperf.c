@@ -65,7 +65,7 @@ typedef cpu_set_t cpuset_t;
 
 #define CPU_COPY(_from, _to)                    \
 ({                                              \
-    CPU_ZERO(_to);                              \
+    CPU_ZERO((_to));                            \
     CPU_OR((_to), (_to), (_from));              \
 })
 #endif
@@ -122,6 +122,7 @@ struct clp_option optionv[] = {
 
 struct test {
     subr_func  *func;
+    uint64_t    options;
     bool        shared;
     bool        matched;
     const char *name;
@@ -129,62 +130,76 @@ struct test {
 };
 
 struct test testv[] = {
-    { subr_baseline,        1, 1, "baseline",            "function call" },
-    { subr_inc_tls,         0, 0, "inc-tls",             "inc tls var" },
-    { subr_inc_atomic,      1, 0, "inc-atomic",          "inc atomic (relaxed)" },
-    { subr_inc_atomic_cst,  1, 0, "inc-atomic-cst",      "inc atomic (seq cst)" },
-    { subr_xoroshiro,       0, 0, "prng-xoroshiro",      "128-bit prng" },
-    { subr_mod128,          0, 0, "prng-mod128",         "xoroshiro % 128" },
-    { subr_mod127,          0, 0, "prng-mod127",         "xoroshiro % 127" },
-#if HAVE_RDRAND64
-    { subr_rdrand64,        0, 0, "cpu-rdrand64",        "64-bit prng" },
-#endif
-#if HAVE_RDTSC
-    { subr_rdtsc,           0, 0, "cpu-rdtsc",           "read time stamp counter" },
-#endif
-#if HAVE_RDTSCP
-    { subr_rdtscp,          0, 0, "cpu-rdtscp",          "serialized rdtsc+rdpid" },
-#endif
-#ifdef __RDPID__
-    { subr_rdpid,           0, 0, "cpu-rdpid",           "read processor ID" },
-#endif
-#if __linux__
-    { subr_sched_getcpu,    0, 0, "sys-sched-getcpu",    "read processor ID" },
-#endif
-#if __amd64__
-    { subr_lsl,             0, 0, "cpu-lsl",             "read processor ID" },
+    { subr_baseline,        0, 1, 1, "baseline",            "framework overhead" },
+    { subr_inc_tls,         0, 0, 0, "inc-tls",             "inc tls var" },
+    { subr_inc_atomic,      0, 1, 0, "inc-atomic",          "inc atomic (relaxed)" },
+    { subr_inc_atomic_cst,  0, 1, 0, "inc-atomic-cst",      "inc atomic (seq cst)" },
+    { subr_xoroshiro,       0, 0, 0, "prng-xoroshiro",      "128-bit prng" },
+    { subr_mod128,          0, 0, 0, "prng-mod128",         "xoroshiro % 128" },
+    { subr_mod127,          0, 0, 0, "prng-mod127",         "xoroshiro % 127" },
 
-    { subr_cpuid,           0, 0, "cpu-cpuid",           "serialize instruction execution" },
-    { subr_lfence,          0, 0, "cpu-lfence",          "serialize mem loads" },
-    { subr_sfence,          0, 0, "cpu-sfence",          "serialize mem stores" },
-    { subr_mfence,          0, 0, "cpu-mfence",          "serialize mem loads+stores" },
-    { subr_pause,           0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
+#if HAVE_RDRAND64
+    { subr_rdrand64,        0, 0, 0, "cpu-rdrand64",        "64-bit prng" },
 #endif
+
+#if HAVE_RDTSC
+    { subr_rdtsc,           0, 0, 0, "cpu-rdtsc",           "read time stamp counter" },
+#endif
+
+#if HAVE_RDTSCP
+    { subr_rdtscp,          0, 0, 0, "cpu-rdtscp",          "serialized rdtsc+rdpid" },
+#endif
+
+#ifdef __RDPID__
+    { subr_rdpid,           0, 0, 0, "cpu-rdpid",           "read processor ID" },
+#endif
+
+#if __linux__
+    { subr_sched_getcpu,    0, 0, 0, "sys-sched-getcpu",    "read processor ID" },
+#endif
+
+#if __amd64__
+    { subr_lsl,             0, 0, 0, "cpu-lsl",             "read processor ID" },
+
+    { subr_cpuid,           0, 0, 0, "cpu-cpuid",           "serialize instruction execution" },
+    { subr_lfence,          0, 0, 0, "cpu-lfence",          "serialize mem loads" },
+    { subr_sfence,          0, 0, 0, "cpu-sfence",          "serialize mem stores" },
+    { subr_mfence,          0, 0, 0, "cpu-mfence",          "serialize mem loads+stores" },
+    { subr_pause,           0, 0, 0, "cpu-pause",           "spin-wait-loop enhancer" },
+#endif
+
 #ifdef CLOCK_REALTIME
-    { subr_clock_real,      0, 0, "sys-clock-gettime",   "real time (default)" },
+    { subr_clock_real,      0, 0, 0, "sys-clock-gettime",   "real time (default)" },
 #endif
+
 #ifdef CLOCK_REALTIME_COARSE
-    { subr_clock_realfast,  0, 0, "sys-clock-gettime",   "real time (course)" },
+    { subr_clock_realfast,  0, 0, 0, "sys-clock-gettime",   "real time (course)" },
 #endif
+
 #ifdef CLOCK_MONOTONIC
-    { subr_clock_mono,      0, 0, "sys-clock-gettime",   "monotonic time (default)" },
+    { subr_clock_mono,      0, 0, 0, "sys-clock-gettime",   "monotonic time (default)" },
 #endif
+
 #ifdef CLOCK_MONOTONIC_COARSE
-    { subr_clock_monofast,  0, 0, "sys-clock-gettime",   "monotonic time (course)" },
+    { subr_clock_monofast,  0, 0, 0, "sys-clock-gettime",   "monotonic time (course)" },
 #endif
-    { subr_ticket,          1, 0, "lock-ticket",         "lock+inc+unlock" },
-    { subr_spin_cmpxchg,    1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
-    { subr_spin_pthread,    1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
-    { subr_mutex_pthread,   1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
-    { subr_mutex_sema,      1, 0, "lock-mutex-sema",     "wait+inc+post (value=1)" },
-    { subr_wrlock_pthread,  1, 0, "lock-wrlock-pthread", "wrlock+inc+unlock (no readers)" },
-    { subr_rdlock_pthread,  1, 0, "lock-rdlock-pthread", "rdlock+inc+unlock (no writers)" },
-    { subr_sema,            1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
-    { subr_stack_lockfree,  1, 0, "stack-lockfree",      "pop+inc+push" },
-    { subr_stack_mutex,     1, 0, "stack-mutex",         "lock+pop+inc+push+unlock" },
-    { subr_stack_wrlock,    1, 0, "stack-wrlock",        "lock+pop+inc+push+unlock" },
-    { subr_stack_sema,      1, 0, "stack-sema",          "lock+pop+inc+push+unlock" },
-    { NULL, 0, 0, NULL, NULL }
+
+    { subr_ticket,          0, 1, 0, "lock-ticket",         "lock+inc+unlock" },
+    { subr_spin_cmpxchg,    0, 1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
+    { subr_spin_pthread,    0, 1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
+    { subr_spin_pthread,    1, 1, 0, "lock-spin-pthread",   "lock+inc+unlock (pshared)" },
+    { subr_mutex_pthread,   0, 1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
+    { subr_mutex_pthread,   1, 1, 0, "lock-mutex-pthread",  "lock+inc+unlock (pshared)" },
+    { subr_mutex_sema,      0, 1, 0, "lock-mutex-sema",     "wait+inc+post (value=1)" },
+    { subr_wrlock_pthread,  0, 1, 0, "lock-wrlock-pthread", "wrlock+inc+unlock (no readers)" },
+    { subr_rdlock_pthread,  0, 1, 0, "lock-rdlock-pthread", "rdlock+inc+unlock (no writers)" },
+    { subr_sema,            0, 1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
+    { subr_stack_lockfree,  0, 1, 0, "stack-lockfree",      "pop+inc+push" },
+    { subr_stack_mutex,     0, 1, 0, "stack-mutex",         "lock+pop+inc+push+unlock" },
+    { subr_stack_sema,      0, 1, 0, "stack-sema",          "lock+pop+inc+push+unlock" },
+    { subr_stack_wrlock,    0, 1, 0, "stack-wrlock",        "lock+pop+inc+push+unlock" },
+
+    { NULL, 0, 0, 0, NULL, NULL }
 };
 
 static void
@@ -484,10 +499,17 @@ main(int argc, char **argv)
     struct subr_data **datav;
     double cyc_baseline;
     struct test *test;
+    size_t pagesz;
+    long lrc;
     int rc;
 
     progname = strrchr(argv[0], '/');
     progname = progname ? progname + 1 : argv[0];
+
+    lrc = sysconf(_SC_PAGESIZE);
+    if (lrc == -1)
+        lrc = 4096;
+    pagesz = (size_t)lrc;
 
     headers = true;
     duration = 10;
@@ -659,6 +681,7 @@ main(int argc, char **argv)
         exit(EX_OSERR);
     }
 
+
     /* Allocate an array of pointers to keep track of the per-thread
      * data allocations (one pointer for each thread we're about to
      * create).
@@ -761,6 +784,7 @@ main(int argc, char **argv)
                 args->stats[0].delta = cyc_start0;
                 args->stats[1].delta = cyc_start1;
                 args->func = test->func;
+                args->options = test->options;
                 args->seed = seed + tdcnt;
                 args->tdnum = tdcnt;
                 args->tdgrp = tdgrp;
@@ -770,20 +794,34 @@ main(int argc, char **argv)
                 *args_nextpp = args;
                 args_nextpp = &args->next;
 
-                /* In shared mode we create a single data object per
-                 * CPU group and share it with all threads in that
-                 * group.  In non-shared mode each thread gets its
-                 * own private data object.
+                /* In shared mode we create a single data object per CPU group
+                 * and share it with all threads in that group.  In non-shared
+                 * mode each thread gets its own private data object.
                  */
                 data = datav[datagrp];
                 if (!data) {
+                    size_t off, n;
+
                     align = __alignof(*data);
                     if (align < 128)
                         align = 128;
 
-                    data = aligned_alloc(align, roundup(sizeof(*data), align));
+                    if (align >= pagesz || sizeof(*data) >= pagesz - align)
+                        abort();
+
+                    /* Allocate a page, then choose an address within the page
+                     * that is a multiple of "align", where the multiple is
+                     * based upon the number threads we have created so far...
+                     */
+                    data = aligned_alloc(pagesz, roundup(sizeof(*data), pagesz));
                     if (!data)
                         abort();
+
+                    n = (pagesz - sizeof(*data)) / align;
+                    off = align * (tdcnt % n);
+                    data = (void *)((char *)data + off);
+                    //printf("args %p  data %p  off %zu  n %zu  tdcnt %zu\n",
+                    //args, data, off, n, tdcnt);
 
                     memset(data, 0, sizeof(*data));
                     data->cpumax = shared ? CPU_COUNT(gmask) : 1;
@@ -878,7 +916,7 @@ main(int argc, char **argv)
             subr_fini(args);
 
             if (args->data->refcnt == 0)
-                free(args->data);
+                free((void *)rounddown((uintptr_t)args->data, pagesz));
 
             cycles = stats[1].delta;
             cycles_total += cycles;

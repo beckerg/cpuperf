@@ -545,12 +545,6 @@ subr_stack_wrlock_init(struct subr_args *args)
     if (rc)
         return rc;
 
-#if __FreeBSD__
-    for (size_t i = 0; i < NELEM(stack->padv); ++i) {
-        pthread_rwlock_init(&stack->padv[i], NULL);
-    }
-#endif
-
     stack->head = NULL;
 
     for (size_t i = 0; i < nelem; ++i) {
@@ -682,33 +676,43 @@ subr_init(struct subr_args *args)
         atomic_store(&data->ticket.head, 0);
         atomic_store(&data->ticket.tail, 0);
     }
-    else if (func == subr_rdlock_pthread ||
-             func == subr_wrlock_pthread) {
+    else if (func == subr_rdlock_pthread || func == subr_wrlock_pthread) {
+        struct subr_rwlock_pthread *rwlock = &data->rwlock_pthread;
 
-        rc = pthread_rwlock_init(&data->rwlock_pthread.lock, NULL);
-
-#if __FreeBSD__
-        // Try to prevent false sharing...
-        for (size_t i = 0; i < NELEM(data->rwlock_pthread.padv); ++i) {
-            pthread_rwlock_init(&data->rwlock_pthread.padv[i], NULL);
-        }
-#endif
+        rc = pthread_rwlock_init(&rwlock->lock, NULL);
     }
     else if (func == subr_spin_cmpxchg) {
         atomic_store(&data->spin_cmpxchg.lock, 0);
     }
     else if (func == subr_spin_pthread) {
-        rc = pthread_spin_init(&data->spin_pthread.lock, 0);
+        struct subr_spin_pthread *spin = &data->spin_pthread;
+        int pshared = PTHREAD_PROCESS_PRIVATE;
 
-#if __FreeBSD__
-        // Try to prevent false sharing...
-        for (size_t i = 0; i < NELEM(data->rwlock_pthread.padv); ++i) {
-            rc = pthread_spin_init(&data->spin_pthread.padv[i], 0);
-        }
-#endif
+        if (args->options == 1)
+            pshared = PTHREAD_PROCESS_SHARED;
+
+        rc = pthread_spin_init(&spin->lock, pshared);
     }
     else if (func == subr_mutex_pthread) {
-        rc = pthread_mutex_init(&data->mutex_pthread.lock, NULL);
+        struct subr_mutex_pthread *mutex = &data->mutex_pthread;
+
+        if (args->options == 1) {
+            pthread_mutexattr_t attr;
+
+            rc = pthread_mutexattr_init(&attr);
+            if (rc)
+                return rc;
+
+            rc = pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+            if (rc)
+                return rc;
+
+            rc = pthread_mutex_init(&mutex->lock, &attr);
+
+            pthread_mutexattr_destroy(&attr);
+        } else {
+            rc = pthread_mutex_init(&mutex->lock, NULL);
+        }
     }
     else if (func == subr_mutex_sema) {
         rc = sem_init(&data->mutex_sema.lock, 0, 1);
@@ -741,25 +745,15 @@ subr_fini(struct subr_args *args)
     if (atomic_dec(&data->refcnt) > 1)
         return;
 
-    if (func == subr_rdlock_pthread ||
-        func == subr_wrlock_pthread) {
+    if (func == subr_rdlock_pthread || func == subr_wrlock_pthread) {
+        struct subr_rwlock_pthread *rwlock = &data->rwlock_pthread;
 
-#if __FreeBSD__
-        for (size_t i = 0; i < NELEM(data->rwlock_pthread.padv); ++i) {
-            pthread_rwlock_destroy(&data->rwlock_pthread.padv[i]);
-        }
-#endif
-
-        pthread_rwlock_destroy(&data->rwlock_pthread.lock);
+        pthread_rwlock_destroy(&rwlock->lock);
     }
     else if (func == subr_spin_pthread) {
-#if __FreeBSD__
-        for (size_t i = 0; i < NELEM(data->spin_pthread.padv); ++i) {
-            pthread_spin_destroy(&data->spin_pthread.padv[i]);
-        }
-#endif
+        struct subr_spin_pthread *spin = &data->spin_pthread;
 
-        pthread_spin_destroy(&data->spin_pthread.lock);
+        pthread_spin_destroy(&spin->lock);
     }
     else if (func == subr_mutex_pthread) {
         pthread_mutex_destroy(&data->mutex_pthread.lock);
@@ -790,12 +784,6 @@ subr_fini(struct subr_args *args)
         while (( node = subr_stack_wrlock_pop(stack) )) {
             free(node);
         }
-
-#if __FreeBSD__
-        for (size_t i = 0; i < NELEM(stack->padv); ++i) {
-            pthread_rwlock_destroy(&stack->padv[i]);
-        }
-#endif
 
         pthread_rwlock_destroy(&stack->lock);
     }
