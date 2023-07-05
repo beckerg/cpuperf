@@ -299,9 +299,9 @@ subr_cmpxchg_unlock(atomic_int *ptr)
 }
 
 uintptr_t
-subr_spin_cmpxchg(struct subr_args *args)
+subr_cmpxchg_spin(struct subr_args *args)
 {
-    struct subr_spin_cmpxchg *spin = &args->data->spin_cmpxchg;
+    struct subr_cmpxchg_spin *spin = &args->data->cmpxchg_spin;
 
     subr_cmpxchg_lock(&spin->lock);
     spin->cnt++;
@@ -311,9 +311,9 @@ subr_spin_cmpxchg(struct subr_args *args)
 }
 
 uintptr_t
-subr_spin_pthread(struct subr_args *args)
+subr_pthread_spin(struct subr_args *args)
 {
-    struct subr_spin_pthread *spin = &args->data->spin_pthread;
+    struct subr_pthread_spin *spin = &args->data->pthread_spin;
 
     pthread_spin_lock(&spin->lock);
     spin->cnt++;
@@ -323,9 +323,22 @@ subr_spin_pthread(struct subr_args *args)
 }
 
 uintptr_t
-subr_mutex_pthread(struct subr_args *args)
+subr_pthread_spin_trylock(struct subr_args *args)
 {
-    struct subr_mutex_pthread *mtx = &args->data->mutex_pthread;
+    struct subr_pthread_spin *spin = &args->data->pthread_spin;
+
+    while (pthread_spin_trylock(&spin->lock))
+        cpu_pause();
+    spin->cnt++;
+    pthread_spin_unlock(&spin->lock);
+
+    return 0;
+}
+
+uintptr_t
+subr_pthread_mutex(struct subr_args *args)
+{
+    struct subr_pthread_mutex *mtx = &args->data->pthread_mutex;
 
     pthread_mutex_lock(&mtx->lock);
     mtx->cnt++;
@@ -335,9 +348,22 @@ subr_mutex_pthread(struct subr_args *args)
 }
 
 uintptr_t
-subr_mutex_sema(struct subr_args *args)
+subr_pthread_mutex_trylock(struct subr_args *args)
 {
-    struct subr_mutex_sema *mtx = &args->data->mutex_sema;
+    struct subr_pthread_mutex *mtx = &args->data->pthread_mutex;
+
+    while (pthread_mutex_trylock(&mtx->lock))
+        cpu_pause();
+    mtx->cnt++;
+    pthread_mutex_unlock(&mtx->lock);
+
+    return 0;
+}
+
+uintptr_t
+subr_binsema_mutex(struct subr_args *args)
+{
+    struct subr_binsema_mutex *mtx = &args->data->binsema_mutex;
 
     while (sem_wait(&mtx->lock))
         continue;
@@ -349,21 +375,9 @@ subr_mutex_sema(struct subr_args *args)
 }
 
 uintptr_t
-subr_rdlock_pthread(struct subr_args *args)
+subr_pthread_rwlock_wrlock(struct subr_args *args)
 {
-    struct subr_rwlock_pthread *mtx = &args->data->rwlock_pthread;
-
-    pthread_rwlock_rdlock(&mtx->lock);
-    mtx->cnt++;
-    pthread_rwlock_unlock(&mtx->lock);
-
-    return 0;
-}
-
-uintptr_t
-subr_wrlock_pthread(struct subr_args *args)
-{
-    struct subr_rwlock_pthread *mtx = &args->data->rwlock_pthread;
+    struct subr_pthread_rwlock *mtx = &args->data->pthread_rwlock;
 
     pthread_rwlock_wrlock(&mtx->lock);
     mtx->cnt++;
@@ -372,8 +386,20 @@ subr_wrlock_pthread(struct subr_args *args)
     return 0;
 }
 
+uintptr_t
+subr_pthread_rwlock_rdlock(struct subr_args *args)
+{
+    struct subr_pthread_rwlock *mtx = &args->data->pthread_rwlock;
+
+    pthread_rwlock_rdlock(&mtx->lock);
+    mtx->cnt++;
+    pthread_rwlock_unlock(&mtx->lock);
+
+    return 0;
+}
+
 static inline void
-subr_ticket_lock(struct subr_ticket *ticket)
+subr_ticket_spin_lock(struct subr_ticket_spin *ticket)
 {
     uint64_t head;
 
@@ -387,19 +413,19 @@ subr_ticket_lock(struct subr_ticket *ticket)
 }
 
 static inline void
-subr_ticket_unlock(struct subr_ticket *ticket)
+subr_ticket_spin_unlock(struct subr_ticket_spin *ticket)
 {
     atomic_inc_rel(&ticket->tail);
 }
 
 uintptr_t
-subr_ticket(struct subr_args *args)
+subr_ticket_spin(struct subr_args *args)
 {
-    struct subr_ticket *ticket = &args->data->ticket;
+    struct subr_ticket_spin *ticket = &args->data->ticket_spin;
 
-    subr_ticket_lock(ticket);
+    subr_ticket_spin_lock(ticket);
     ticket->cnt++;
-    subr_ticket_unlock(ticket);
+    subr_ticket_spin_unlock(ticket);
 
     return 0;
 }
@@ -672,20 +698,20 @@ subr_init(struct subr_args *args)
     if (func == subr_xoroshiro) {
         xoroshiro128plus_init(data->prng.state, args->seed);
     }
-    else if (func == subr_ticket) {
-        atomic_store(&data->ticket.head, 0);
-        atomic_store(&data->ticket.tail, 0);
+    else if (func == subr_ticket_spin) {
+        atomic_store(&data->ticket_spin.head, 0);
+        atomic_store(&data->ticket_spin.tail, 0);
     }
-    else if (func == subr_rdlock_pthread || func == subr_wrlock_pthread) {
-        struct subr_rwlock_pthread *rwlock = &data->rwlock_pthread;
+    else if (func == subr_pthread_rwlock_rdlock || func == subr_pthread_rwlock_wrlock) {
+        struct subr_pthread_rwlock *rwlock = &data->pthread_rwlock;
 
         rc = pthread_rwlock_init(&rwlock->lock, NULL);
     }
-    else if (func == subr_spin_cmpxchg) {
-        atomic_store(&data->spin_cmpxchg.lock, 0);
+    else if (func == subr_cmpxchg_spin) {
+        atomic_store(&data->cmpxchg_spin.lock, 0);
     }
-    else if (func == subr_spin_pthread) {
-        struct subr_spin_pthread *spin = &data->spin_pthread;
+    else if (func == subr_pthread_spin || func == subr_pthread_spin_trylock) {
+        struct subr_pthread_spin *spin = &data->pthread_spin;
         int pshared = PTHREAD_PROCESS_PRIVATE;
 
         if (args->options == 1)
@@ -693,29 +719,47 @@ subr_init(struct subr_args *args)
 
         rc = pthread_spin_init(&spin->lock, pshared);
     }
-    else if (func == subr_mutex_pthread) {
-        struct subr_mutex_pthread *mutex = &data->mutex_pthread;
+    else if (func == subr_pthread_mutex || func == subr_pthread_mutex_trylock) {
+        struct subr_pthread_mutex *mutex = &data->pthread_mutex;
+        pthread_mutexattr_t attrbuf, *attr;
+
+        rc = pthread_mutexattr_init(&attrbuf);
+        if (rc)
+            return rc;
+
+        attr = &attrbuf;
 
         if (args->options == 1) {
-            pthread_mutexattr_t attr;
-
-            rc = pthread_mutexattr_init(&attr);
+            rc = pthread_mutexattr_setpshared(&attrbuf, PTHREAD_PROCESS_SHARED);
             if (rc)
                 return rc;
 
-            rc = pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-            if (rc)
-                return rc;
-
-            rc = pthread_mutex_init(&mutex->lock, &attr);
-
-            pthread_mutexattr_destroy(&attr);
-        } else {
-            rc = pthread_mutex_init(&mutex->lock, NULL);
         }
+        else if (args->options == 2) {
+            rc = pthread_mutexattr_setrobust(&attrbuf, PTHREAD_MUTEX_ROBUST);
+            if (rc)
+                return rc;
+        }
+        else if (args->options == 3) {
+            rc = pthread_mutexattr_setprotocol(&attrbuf, PTHREAD_PRIO_INHERIT);
+            if (rc)
+                return rc;
+        }
+        else if (args->options == 4) {
+            rc = pthread_mutexattr_setprotocol(&attrbuf, PTHREAD_PRIO_PROTECT);
+            if (rc)
+                return rc;
+        }
+        else {
+            attr = NULL;
+        }
+
+        rc = pthread_mutex_init(&mutex->lock, attr);
+
+        pthread_mutexattr_destroy(&attrbuf);
     }
-    else if (func == subr_mutex_sema) {
-        rc = sem_init(&data->mutex_sema.lock, 0, 1);
+    else if (func == subr_binsema_mutex) {
+        rc = sem_init(&data->binsema_mutex.lock, 0, 1);
     }
     else if (func == subr_sema) {
         rc = sem_init(&data->sema.sema, 0, data->cpumax);
@@ -745,21 +789,21 @@ subr_fini(struct subr_args *args)
     if (atomic_dec(&data->refcnt) > 1)
         return;
 
-    if (func == subr_rdlock_pthread || func == subr_wrlock_pthread) {
-        struct subr_rwlock_pthread *rwlock = &data->rwlock_pthread;
+    if (func == subr_pthread_rwlock_rdlock || func == subr_pthread_rwlock_wrlock) {
+        struct subr_pthread_rwlock *rwlock = &data->pthread_rwlock;
 
         pthread_rwlock_destroy(&rwlock->lock);
     }
-    else if (func == subr_spin_pthread) {
-        struct subr_spin_pthread *spin = &data->spin_pthread;
+    else if (func == subr_pthread_spin || func == subr_pthread_spin_trylock) {
+        struct subr_pthread_spin *spin = &data->pthread_spin;
 
         pthread_spin_destroy(&spin->lock);
     }
-    else if (func == subr_mutex_pthread) {
-        pthread_mutex_destroy(&data->mutex_pthread.lock);
+    else if (func == subr_pthread_mutex || func == subr_pthread_mutex_trylock) {
+        pthread_mutex_destroy(&data->pthread_mutex.lock);
     }
-    else if (func == subr_mutex_sema) {
-        sem_destroy(&data->mutex_sema.lock);
+    else if (func == subr_binsema_mutex) {
+        sem_destroy(&data->binsema_mutex.lock);
     }
     else if (func == subr_sema) {
         sem_destroy(&data->sema.sema);

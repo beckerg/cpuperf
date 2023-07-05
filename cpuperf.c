@@ -184,16 +184,28 @@ struct test testv[] = {
     { subr_clock_monofast,  0, 0, 0, "sys-clock-gettime",   "monotonic time (course)" },
 #endif
 
-    { subr_ticket,          0, 1, 0, "lock-ticket",         "lock+inc+unlock" },
-    { subr_spin_cmpxchg,    0, 1, 0, "lock-spin-cmpxchg",   "lock+inc+unlock" },
-    { subr_spin_pthread,    0, 1, 0, "lock-spin-pthread",   "lock+inc+unlock" },
-    { subr_spin_pthread,    1, 1, 0, "lock-spin-pthread",   "lock+inc+unlock (pshared)" },
-    { subr_mutex_pthread,   0, 1, 0, "lock-mutex-pthread",  "lock+inc+unlock" },
-    { subr_mutex_pthread,   1, 1, 0, "lock-mutex-pthread",  "lock+inc+unlock (pshared)" },
-    { subr_mutex_sema,      0, 1, 0, "lock-mutex-sema",     "wait+inc+post (value=1)" },
-    { subr_wrlock_pthread,  0, 1, 0, "lock-wrlock-pthread", "wrlock+inc+unlock (no readers)" },
-    { subr_rdlock_pthread,  0, 1, 0, "lock-rdlock-pthread", "rdlock+inc+unlock (no writers)" },
+    { subr_ticket_spin,     0, 1, 0, "lock-ticket-spin",          "lock+inc+unlock" },
+    { subr_cmpxchg_spin,    0, 1, 0, "lock-cmpxchg-spin",         "lock+inc+unlock" },
+    { subr_pthread_spin,    0, 1, 0, "lock-pthread-spin-default", "lock+inc+unlock" },
+    { subr_pthread_spin,    1, 1, 0, "lock-pthread-spin-pshared", "lock+inc+unlock (pshared)" },
+    { subr_pthread_spin_trylock,   0, 1, 0, "lock-pthread-spin-trylock", "trylock+inc+unlock" },
+
+    { subr_pthread_mutex,   0, 1, 0, "lock-pthread-mutex-default", "lock+inc+unlock" },
+    { subr_pthread_mutex,   1, 1, 0, "lock-pthread-mutex-pshared", "lock+inc+unlock (pshared)" },
+    { subr_pthread_mutex,   2, 1, 0, "lock-pthread-mutex-robust",  "lock+inc+unlock (robust)" },
+    { subr_pthread_mutex,   3, 1, 0, "lock-pthread-mutex-inherit", "lock+inc+unlock (inherit)" },
+    { subr_pthread_mutex,   4, 1, 0, "lock-pthread-mutex-protect", "lock+inc+unlock (protect)" },
+    { subr_pthread_mutex_trylock,  0, 1, 0, "lock-pthread-mutex-trylock", "trylock+inc+unlock" },
+
+    { subr_binsema_mutex,   0, 1, 0, "lock-binsema-mutex",         "wait+inc+post (value=1)" },
+
+    { subr_pthread_rwlock_wrlock,  0, 1, 0,
+      "lock-pthread-rwlock-wrlock", "wrlock+inc+unlock (no readers)" },
+    { subr_pthread_rwlock_rdlock,  0, 1, 0,
+      "lock-pthread-rwlock-rdlock", "rdlock+inc+unlock (no writers)" },
+
     { subr_sema,            0, 1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
+
     { subr_stack_lockfree,  0, 1, 0, "stack-lockfree",      "pop+inc+push" },
     { subr_stack_mutex,     0, 1, 0, "stack-mutex",         "lock+pop+inc+push+unlock" },
     { subr_stack_sema,      0, 1, 0, "stack-sema",          "lock+pop+inc+push+unlock" },
@@ -512,7 +524,7 @@ main(int argc, char **argv)
     pagesz = (size_t)lrc;
 
     headers = true;
-    duration = 10;
+    duration = 15;
     name_width = 8;
 
     rc = clp_parsev(argc, argv, optionv, posparamv);

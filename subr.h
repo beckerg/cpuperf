@@ -47,38 +47,33 @@ struct subr_prng {
     uint64_t state[2];
 };
 
-struct subr_mutex_pthread {
+struct subr_pthread_mutex {
     pthread_mutex_t lock;
     uint64_t        cnt;
 };
 
-struct subr_mutex_wrlock {
-    pthread_rwlock_t lock;
-    uint64_t         cnt;
-};
-
-struct subr_mutex_sema {
+struct subr_binsema_mutex {
     sem_t    lock;
     uint64_t cnt;
 };
 
-struct subr_rwlock_pthread {
+struct subr_pthread_rwlock {
     pthread_rwlock_t lock;
     uint64_t         cnt;
 };
 
-struct subr_ticket {
+struct subr_ticket_spin {
     atomic_ullong head;
     uint64_t      cnt __aligned(64);
     atomic_ullong tail;
 };
 
-struct subr_spin_cmpxchg {
+struct subr_cmpxchg_spin {
     atomic_int lock;
     uint64_t   cnt;
 };
 
-struct subr_spin_pthread {
+struct subr_pthread_spin {
     pthread_spinlock_t lock;
     uint64_t           cnt;
 };
@@ -112,13 +107,12 @@ struct subr_data {
         struct subr_clock            clock;
         struct subr_tsc              tsc;
         struct subr_prng             prng;
-        struct subr_ticket           ticket;
-        struct subr_spin_cmpxchg     spin_cmpxchg;
-        struct subr_spin_pthread     spin_pthread;
-        struct subr_mutex_pthread    mutex_pthread;
-        struct subr_mutex_wrlock     mutex_wrlock;
-        struct subr_rwlock_pthread   rwlock_pthread;
-        struct subr_mutex_sema       mutex_sema;
+        struct subr_ticket_spin      ticket_spin;
+        struct subr_cmpxchg_spin     cmpxchg_spin;
+        struct subr_pthread_spin     pthread_spin;
+        struct subr_pthread_mutex    pthread_mutex;
+        struct subr_pthread_rwlock   pthread_rwlock;
+        struct subr_binsema_mutex    binsema_mutex;
         struct subr_sema             sema;
         struct subr_stack_lockfree   stack_lockfree;
         struct subr_stack_mutex      stack_mutex;
@@ -208,13 +202,16 @@ extern subr_func subr_clock_realfast;
 extern subr_func subr_clock_mono;
 extern subr_func subr_clock_monofast;
 
-extern subr_func subr_rdlock_pthread;
-extern subr_func subr_wrlock_pthread;
-extern subr_func subr_ticket;
-extern subr_func subr_spin_cmpxchg;
-extern subr_func subr_spin_pthread;
-extern subr_func subr_mutex_pthread;
-extern subr_func subr_mutex_sema;
+extern subr_func subr_ticket_spin;
+extern subr_func subr_cmpxchg_spin;
+extern subr_func subr_pthread_spin;
+extern subr_func subr_pthread_mutex;
+extern subr_func subr_binsema_mutex;
+extern subr_func subr_pthread_rwlock_wrlock;
+extern subr_func subr_pthread_rwlock_rdlock;
+
+extern subr_func subr_pthread_spin_trylock;
+extern subr_func subr_pthread_mutex_trylock;
 
 extern subr_func subr_sema;
 
