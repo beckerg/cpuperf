@@ -38,9 +38,11 @@
 #include <pthread.h>
 #include <regex.h>
 
+#if __amd64__
 #if __has_include(<immintrin.h>)
 #include <immintrin.h>
 #include <x86intrin.h>
+#endif
 #endif
 
 #if __FreeBSD__
@@ -197,12 +199,17 @@ struct test testv[] = {
     { subr_pthread_mutex,   4, 1, 0, "lock-pthread-mutex-protect", "lock+inc+unlock (protect)" },
     { subr_pthread_mutex_trylock,  0, 1, 0, "lock-pthread-mutex-trylock", "trylock+inc+unlock" },
 
-    { subr_binsema_mutex,   0, 1, 0, "lock-binsema-mutex",         "wait+inc+post (value=1)" },
+    { subr_binsema_mutex,   0, 1, 0, "lock-binsema-mutex",         "wait+inc+post" },
+    { subr_binsema_mutex,   1, 1, 0, "lock-binsema-mutex-pshared", "wait+inc+post (pshared)" },
 
     { subr_pthread_rwlock_wrlock,  0, 1, 0,
       "lock-pthread-rwlock-wrlock", "wrlock+inc+unlock (no readers)" },
+    { subr_pthread_rwlock_wrlock,  1, 1, 0,
+      "lock-pthread-rwlock-wrlock", "wrlock+inc+unlock (no readers, pshared)" },
     { subr_pthread_rwlock_rdlock,  0, 1, 0,
       "lock-pthread-rwlock-rdlock", "rdlock+inc+unlock (no writers)" },
+    { subr_pthread_rwlock_rdlock,  1, 1, 0,
+      "lock-pthread-rwlock-rdlock", "rdlock+inc+unlock (no writers, pshared)" },
 
     { subr_sema,            0, 1, 0, "lock-semaphore",      "wait+inc+post (value=ncpus)" },
 
@@ -832,8 +839,6 @@ main(int argc, char **argv)
                     n = (pagesz - sizeof(*data)) / align;
                     off = align * (tdcnt % n);
                     data = (void *)((char *)data + off);
-                    //printf("args %p  data %p  off %zu  n %zu  tdcnt %zu\n",
-                    //args, data, off, n, tdcnt);
 
                     memset(data, 0, sizeof(*data));
                     data->cpumax = shared ? CPU_COUNT(gmask) : 1;

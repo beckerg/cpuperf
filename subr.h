@@ -12,9 +12,11 @@
 #include <semaphore.h>
 #include <pthread.h>
 
+#if __amd64__
 #if __has_include(<immintrin.h>)
 #include <immintrin.h>
 #include <x86intrin.h>
+#endif
 #endif
 
 #define HAVE_RDTSC          (__has_builtin(__builtin_ia32_rdtsc))

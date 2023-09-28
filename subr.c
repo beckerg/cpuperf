@@ -33,10 +33,13 @@
 #include <time.h>
 #include <semaphore.h>
 #include <pthread.h>
+#include <sys/param.h>
 
+#if __amd64__
 #if __has_include(<immintrin.h>)
 #include <immintrin.h>
 #include <x86intrin.h>
+#endif
 #endif
 
 #if __linux__
@@ -512,7 +515,7 @@ subr_stack_mutex_init(struct subr_args *args)
     stack->head = NULL;
 
     for (size_t i = 0; i < nelem; ++i) {
-        node = aligned_alloc(128, 128);
+        node = aligned_alloc(128, roundup(sizeof(*node), 128));
         if (node) {
             node->cnt = 0;
             node->next = stack->head;
@@ -574,7 +577,7 @@ subr_stack_wrlock_init(struct subr_args *args)
     stack->head = NULL;
 
     for (size_t i = 0; i < nelem; ++i) {
-        node = aligned_alloc(128, 128);
+        node = aligned_alloc(128, roundup(sizeof(*node), 128));
         if (node) {
             node->cnt = 0;
             node->next = stack->head;
@@ -636,7 +639,7 @@ subr_stack_sema_init(struct subr_args *args)
     stack->head = NULL;
 
     for (size_t i = 0; i < nelem; ++i) {
-        node = aligned_alloc(128, 128);
+        node = aligned_alloc(128, roundup(sizeof(*node), 128));
         if (node) {
             node->cnt = 0;
             node->next = stack->head;
@@ -695,6 +698,15 @@ subr_init(struct subr_args *args)
     if (atomic_inc(&data->refcnt) > 0)
         return 0;
 
+#if 0
+    printf("%p %lu %3lu: %3lu %2zu %2zu %2u\n",
+           data, (uintptr_t)data / 4096, ((uintptr_t)data >> 6) & 127,
+           ((unsigned long)data >> 8) % 128,
+           (uintptr_t)data % 9,
+           (uintptr_t)data % 11,
+           (uint32_t)((uintptr_t)data >> 1) % 11);
+#endif
+
     if (func == subr_xoroshiro) {
         xoroshiro128plus_init(data->prng.state, args->seed);
     }
@@ -704,8 +716,24 @@ subr_init(struct subr_args *args)
     }
     else if (func == subr_pthread_rwlock_rdlock || func == subr_pthread_rwlock_wrlock) {
         struct subr_pthread_rwlock *rwlock = &data->pthread_rwlock;
+        pthread_rwlockattr_t attrbuf, *attrs = &attrbuf;
 
-        rc = pthread_rwlock_init(&rwlock->lock, NULL);
+        rc = pthread_rwlockattr_init(attrs);
+        if (rc)
+            return rc;
+
+        if (args->options == 1) {
+            rc = pthread_rwlockattr_setpshared(attrs, PTHREAD_PROCESS_SHARED);
+            if (rc)
+                return rc;
+        }
+        else {
+            attrs = NULL;
+        }
+
+        rc = pthread_rwlock_init(&rwlock->lock, attrs);
+
+        pthread_rwlockattr_destroy(&attrbuf);
     }
     else if (func == subr_cmpxchg_spin) {
         atomic_store(&data->cmpxchg_spin.lock, 0);
@@ -721,45 +749,42 @@ subr_init(struct subr_args *args)
     }
     else if (func == subr_pthread_mutex || func == subr_pthread_mutex_trylock) {
         struct subr_pthread_mutex *mutex = &data->pthread_mutex;
-        pthread_mutexattr_t attrbuf, *attr;
+        pthread_mutexattr_t attrbuf, *attrs = &attrbuf;
 
-        rc = pthread_mutexattr_init(&attrbuf);
+        rc = pthread_mutexattr_init(attrs);
         if (rc)
             return rc;
 
-        attr = &attrbuf;
-
         if (args->options == 1) {
-            rc = pthread_mutexattr_setpshared(&attrbuf, PTHREAD_PROCESS_SHARED);
+            rc = pthread_mutexattr_setpshared(attrs, PTHREAD_PROCESS_SHARED);
             if (rc)
                 return rc;
-
         }
         else if (args->options == 2) {
-            rc = pthread_mutexattr_setrobust(&attrbuf, PTHREAD_MUTEX_ROBUST);
+            rc = pthread_mutexattr_setrobust(attrs, PTHREAD_MUTEX_ROBUST);
             if (rc)
                 return rc;
         }
         else if (args->options == 3) {
-            rc = pthread_mutexattr_setprotocol(&attrbuf, PTHREAD_PRIO_INHERIT);
+            rc = pthread_mutexattr_setprotocol(attrs, PTHREAD_PRIO_INHERIT);
             if (rc)
                 return rc;
         }
         else if (args->options == 4) {
-            rc = pthread_mutexattr_setprotocol(&attrbuf, PTHREAD_PRIO_PROTECT);
+            rc = pthread_mutexattr_setprotocol(attrs, PTHREAD_PRIO_PROTECT);
             if (rc)
                 return rc;
         }
         else {
-            attr = NULL;
+            attrs = NULL;
         }
 
-        rc = pthread_mutex_init(&mutex->lock, attr);
+        rc = pthread_mutex_init(&mutex->lock, attrs);
 
         pthread_mutexattr_destroy(&attrbuf);
     }
     else if (func == subr_binsema_mutex) {
-        rc = sem_init(&data->binsema_mutex.lock, 0, 1);
+        rc = sem_init(&data->binsema_mutex.lock, !!args->options, 1);
     }
     else if (func == subr_sema) {
         rc = sem_init(&data->sema.sema, 0, data->cpumax);
@@ -800,7 +825,9 @@ subr_fini(struct subr_args *args)
         pthread_spin_destroy(&spin->lock);
     }
     else if (func == subr_pthread_mutex || func == subr_pthread_mutex_trylock) {
-        pthread_mutex_destroy(&data->pthread_mutex.lock);
+        struct subr_pthread_mutex *mutex = &data->pthread_mutex;
+
+        pthread_mutex_destroy(&mutex->lock);
     }
     else if (func == subr_binsema_mutex) {
         sem_destroy(&data->binsema_mutex.lock);
