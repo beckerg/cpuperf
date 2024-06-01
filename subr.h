@@ -19,10 +19,15 @@
 #endif
 #endif
 
+#ifdef __has_builtin
 #define HAVE_RDTSC          (__has_builtin(__builtin_ia32_rdtsc))
 #define HAVE_RDTSCP         (__has_builtin(__builtin_ia32_rdtscp))
 #define HAVE_RDRAND64       (__has_builtin(__builtin_ia32_rdrand64_step))
 #define HAVE_PAUSE          (__has_builtin(__builtin_ia32_pause))
+#else
+#define HAVE_RDTSC          (__amd64__)
+#define HAVE_PAUSE          (__amd64__)
+#endif
 
 #ifndef __aligned
 #define __aligned(_size)    __attribute__((__aligned__(_size)))

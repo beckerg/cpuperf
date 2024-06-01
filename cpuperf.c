@@ -79,7 +79,11 @@ typedef cpu_set_t cpuset_t;
  * it's not available we'll fall back to using clock_gettime().
  */
 #ifndef USE_CLOCK
-#define USE_CLOCK           (!HAVE_RDTSC)
+#if HAVE_RDTSC
+#define USE_CLOCK           (0)
+#else
+#define USE_CLOCK           (1)
+#endif
 #endif
 
 char version[] = PROG_VERSION;

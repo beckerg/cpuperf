@@ -1,4 +1,4 @@
-# Copyright (c) 2021 Greg Becker.  All rights reserved.
+# Copyright (c) 2021,2023 Greg Becker.  All rights reserved.
 
 PROG := cpuperf
 
@@ -13,7 +13,7 @@ CFLAGS   += -std=c11 -Wall -Wextra -O2 -g ${INCLUDE}
 CPPFLAGS += -DPROG_VERSION=\"1.0.0-${PROG_VERSION}\" -DNDEBUG
 LDLIBS   += -lpthread
 
-ifeq ($(shell echo "int main() { return 0; }" | ${CC} -xc  -march=native - 2>&1),)
+ifeq ($(shell echo "int main() { return 0; }" | ${CC} -xc  -march=native -o /dev/null - 2>&1),)
 CFLAGS += -march=native
 endif
 
