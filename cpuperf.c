@@ -113,7 +113,7 @@ struct clp_option optionv[] = {
 #endif
     CLP_OPTION('H',     bool,   headers, NULL, "suppress headers"),
 
-    CLP_XOPTION('l',    bool,  testlist, "dfH", "list tests",
+    CLP_XOPTION('l',    bool,  testlist, "adfSs", "list tests",
                 "testlist", NULL, NULL, clp_posparam_none),
 
     CLP_OPTION('S', uint64_t,      seed, NULL, "specify initial PRNG seed"),
@@ -604,7 +604,8 @@ main(int argc, char **argv)
     }
 
     if (clp_given('l', optionv, NULL)) {
-        printf("%-*s  %s\n", name_width, "NAME", "DESC");
+        if (headers)
+            printf("%-*s  %s\n", name_width, "NAME", "DESC");
 
         for (test = testv; test->name; ++test) {
             if (test->matched)

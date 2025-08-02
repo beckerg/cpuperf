@@ -27,6 +27,10 @@
 #ifndef CLP_H
 #define CLP_H
 
+#define CLP_ERRBUF_MAX      (256)
+#define CLP_OPTION_MAX      (256)
+#define CLP_POSPARAM_MAX    (4096)
+
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -34,6 +38,10 @@
 #include <math.h>
 #include <sysexits.h>
 #include <sys/types.h>
+
+#ifndef __printflike
+#define __printflike(_x, _y)    __attribute__((__format__ (__printf__, _x, _y)))
+#endif
 
 /* List of conversion routines provided by clp.  The name from the "_xtype"
  * column can be given as the fifth argument to CLP_OPTION(), or appended
@@ -124,7 +132,7 @@
     }
 
 /* Use the VERBOSITY, VERSION, DRYRUN, HELP, and CONF templates to ensure
- * a consistent look-and-free across all tools built with clp.
+ * a consistent look-and-feel across all tools built with clp.
  */
 #define CLP_OPTION_VERBOSITY(_xverbosity)                               \
     CLP_OPTION('v', incr, _xverbosity, NULL, "increase verbosity")
@@ -147,9 +155,9 @@
     }
 
 #define CLP_OPTION_STD(_xverbosity, _xversion, _xdryrun)        \
-    CLP_OPTION_VERBOSITY(verbosity),                            \
-    CLP_OPTION_VERSION(version),                                \
-    CLP_OPTION_DRYRUN(dryrun),                                  \
+    CLP_OPTION_VERBOSITY(_xverbosity),                          \
+    CLP_OPTION_VERSION(_xversion),                              \
+    CLP_OPTION_DRYRUN(_xdryrun),                                \
     CLP_OPTION_HELP                                             \
 
 #define CLP_OPTION_CONF(_xconf)                                         \
@@ -289,11 +297,11 @@ struct clp {
     struct clp_option   *optionv;       // Argument from clp_parsev()
     struct clp_posparam *paramv;        // Argument from clp_parsev()
     int                  opthelp;       // The option tied to opt_help()
-    int                  optionc;       // Count of elements in optionv[]
+    size_t               optionc;       // Count of elements in optionv[]
     char                *optstring;     // The optstring for getopt
     struct option       *longopts;      // Table of long options for getopt_long()
     struct clp_posparam *params;        // posparam list head
-    char                 errbuf[128];
+    char                 errbuf[CLP_ERRBUF_MAX];
 };
 
 struct clp_suftab {
@@ -563,7 +571,8 @@ extern clp_get_cb clp_get_time_t;
 extern clp_option_cb clp_help;
 extern clp_option_cb clp_version;
 
-extern int clp_breakargs(const char *src, const char *delim, int *argcp, char ***argvp);
+extern int clp_breakargs(const char *src, const char *delim,
+                         int *argcp, char ***argvp);
 
 extern int clp_parsev(int argc, char **argv,
                       struct clp_option *optionv,
@@ -573,6 +582,7 @@ extern int clp_parsel(const char *line, const char *delim,
                       struct clp_option *optionv,
                       struct clp_posparam *paramv);
 
-extern void clp_eprint(struct clp *clp, const char *fmt, ...);
+extern void clp_eprint(struct clp *clp, const char *fmt, ...)
+    __printflike(2, 3);
 
 #endif /* CLP_H */
